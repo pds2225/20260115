@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Node
+node_modules/
+dist/
+build/
+.cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+
+# Docker
+docker-compose.override.yml
+
+# Data
+*.csv
+*.db
+*.sqlite
+
+# Models
+*.pkl
+*.joblib
+models/*.h5
+models/*.pt
