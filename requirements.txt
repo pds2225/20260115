@@ -1,0 +1,23 @@
+# Global Export Intelligence Platform - Dependencies
+
+# Web Framework
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+
+# HTTP Client (async)
+httpx==0.28.1
+
+# Data Validation
+pydantic==2.10.0
+
+# Environment Variables
+python-dotenv==1.0.1
+
+# ASGI Server
+gunicorn==23.0.0
+
+# Development
+black==24.10.0
+isort==5.13.0
+pytest==8.3.0
+pytest-asyncio==0.24.0
