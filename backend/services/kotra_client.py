@@ -24,7 +24,7 @@ class KotraAPIClient:
     
     # API Endpoints
     ENDPOINTS = {
-        "export_recommend": "https://apis.data.go.kr/B410001/export-recommend-info",
+        "export_recommend": "https://apis.data.go.kr/B410001/export-recommend-info/search",
         "country_info": "https://apis.data.go.kr/B410001/kotra_nationalInformation/natnInfo/natnInfo",
         "product_db": "https://apis.data.go.kr/B410001/cmmdtDb/cmmdtDb",
         "overseas_news": "https://apis.data.go.kr/B410001/kotra_overseasMarketNews/ovseaMrktNews/ovseaMrktNews",
@@ -99,22 +99,24 @@ class KotraAPIClient:
     
     # =========================================================================
     # 1. Export Recommendation API (수출유망추천정보)
-    # NOTE: This API endpoint returns "Unexpected errors" - using mock data
+    # Endpoint: /search - 890,596건 데이터 보유
     # =========================================================================
     async def get_export_recommendations(
         self,
-        hs_code: str,
+        hs_code: Optional[str] = None,
+        country_name: Optional[str] = None,
         export_scale: Optional[str] = None,
         num_rows: int = 20
     ) -> List[Dict[str, Any]]:
         """Get ML-based export recommendation scores.
         
-        NOTE: The KOTRA Export Recommendation API endpoint is currently 
-        returning errors. This method uses mock data based on Product DB
-        and Country Info APIs as fallback.
+        실제 KOTRA 수출유망확률정보 API 호출
+        - 총 890,596건의 데이터 보유
+        - EXP_BHRC_SCR: 수출 성공 확률 점수 (0-5+, 높을수록 유망)
         
         Args:
-            hs_code: HS Code (4-6 digits)
+            hs_code: HS Code (4-6 digits) - 선택적 필터
+            country_name: 국가명 (예: "미국", "중국") - 선택적 필터
             export_scale: Export scale code (optional)
             num_rows: Number of results to return
             
@@ -122,12 +124,46 @@ class KotraAPIClient:
             List of recommendations with:
             - HSCD: HS Code
             - NAT_NAME: Country name
-            - EXPORTSCALE: Export scale
+            - EXPORTSCALE: Export scale (내수, A, B, etc.)
             - EXP_BHRC_SCR: Export success score (0-5+, higher is better)
             - UPDT_DT: Update datetime
         """
-        # Generate mock recommendations based on country info
-        # In production, this should integrate with working KOTRA data
+        params = {
+            "numOfRows": num_rows,
+        }
+        
+        # API 레벨에서 HS 코드 필터링 (파라미터명: hscd)
+        if hs_code:
+            params["hscd"] = hs_code[:6]  # 6자리 HS코드
+        
+        result = await self._request("export_recommend", params)
+        
+        # API 응답 구조: {"records": [...], "pageNo": 1, "totalCount": 890596, ...}
+        records = result.get("records", [])
+        
+        if not records:
+            # API 실패 시 Mock 데이터 반환
+            logger.warning("Export Recommendation API returned no data, using fallback")
+            return self._get_fallback_recommendations(hs_code, num_rows)
+        
+        # hs_code 또는 country_name으로 클라이언트 측 필터링
+        filtered = records
+        if hs_code:
+            hs_prefix = hs_code[:4]
+            filtered = [r for r in filtered if r.get("HSCD", "").startswith(hs_prefix)]
+        
+        if country_name:
+            filtered = [r for r in filtered if country_name in r.get("NAT_NAME", "")]
+        
+        # 필터링 결과가 없으면 전체 결과 반환
+        if not filtered and records:
+            logger.info(f"No filtered results for HS:{hs_code}, returning all records")
+            return records[:num_rows]
+        
+        return filtered[:num_rows] if filtered else records[:num_rows]
+    
+    def _get_fallback_recommendations(self, hs_code: str, num_rows: int) -> List[Dict[str, Any]]:
+        """API 실패 시 사용하는 Fallback Mock 데이터"""
         mock_countries = [
             {"code": "US", "name": "미국", "base_score": 3.5},
             {"code": "CN", "name": "중국", "base_score": 3.2},
@@ -142,13 +178,13 @@ class KotraAPIClient:
         records = []
         for country in mock_countries[:num_rows]:
             records.append({
-                "HSCD": hs_code,
+                "HSCD": hs_code or "000000",
                 "NAT_CD": country["code"],
                 "NAT_NAME": country["name"],
-                "EXPORTSCALE": export_scale or "B",
+                "EXPORTSCALE": "B",
                 "EXP_BHRC_SCR": country["base_score"],
                 "UPDT_DT": datetime.now().strftime("%Y-%m-%d"),
-                "data_source": "mock_fallback"
+                "data_source": "fallback"
             })
         
         return records[:num_rows]

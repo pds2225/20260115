@@ -16,7 +16,13 @@ KOTRA APIs integrated:
 
 import os
 import logging
+from pathlib import Path
 from contextlib import asynccontextmanager
+
+# Load .env file from project root
+from dotenv import load_dotenv
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(env_path)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

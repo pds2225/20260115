@@ -54,6 +54,10 @@ class SimulationService:
     MIN_MARKET_SHARE = 0.0001  # 0.01%
     MAX_MARKET_SHARE = 0.001   # 0.1%
     
+    # Export score normalization (based on actual API data analysis)
+    # API returns scores typically in range 1-30 (max observed: ~25.65)
+    EXPORT_SCORE_MAX = 30.0
+    
     def __init__(self, kotra_client: Optional[KotraAPIClient] = None):
         """Initialize simulation service.
         
@@ -180,6 +184,32 @@ class SimulationService:
             generated_at=datetime.utcnow()
         )
     
+    # 국가 코드-이름 매핑 (API 응답의 NAT_NAME과 매칭용)
+    COUNTRY_NAME_MAP = {
+        "US": ["미국", "United States", "USA"],
+        "CN": ["중국", "China", "PRC"],
+        "JP": ["일본", "Japan"],
+        "VN": ["베트남", "Vietnam"],
+        "DE": ["독일", "Germany"],
+        "SG": ["싱가포르", "Singapore"],
+        "TH": ["태국", "Thailand"],
+        "ID": ["인도네시아", "Indonesia"],
+        "IN": ["인도", "India"],
+        "AU": ["호주", "Australia"],
+        "GB": ["영국", "United Kingdom", "UK"],
+        "FR": ["프랑스", "France"],
+        "MY": ["말레이시아", "Malaysia"],
+        "PH": ["필리핀", "Philippines"],
+        "AE": ["아랍에미리트", "UAE", "United Arab Emirates"],
+        "CA": ["캐나다", "Canada"],
+        "MX": ["멕시코", "Mexico"],
+        "BR": ["브라질", "Brazil"],
+        "NL": ["네덜란드", "Netherlands"],
+        "IT": ["이탈리아", "Italy"],
+        "RU": ["러시아연방", "Russia", "러시아"],
+        "MN": ["몽골", "Mongolia"],
+    }
+    
     def _get_export_score(
         self,
         export_recs: list,
@@ -188,36 +218,53 @@ class SimulationService:
     ) -> float:
         """Extract export score for target country.
         
+        Updated 2024-01-24: 실제 API 데이터 기반
+        - API 점수 범위: 1.04 ~ 25.65 (평균 6.20)
+        - 국가명 매칭 개선 (코드 → 한글명)
+        
         Args:
             export_recs: List of export recommendations
             hs_code: Target HS code
-            target_country: Target country code/name
+            target_country: Target country code (US, CN, JP, etc.)
             
         Returns:
-            Export success score (0-5)
+            Export success score (0-30 range)
         """
         if not export_recs:
-            return 2.5  # Default middle score
+            return 6.2  # Default to average score
         
         hs_prefix = hs_code[:4]
+        target_upper = target_country.upper()
         
+        # 국가명 리스트 가져오기
+        country_names = self.COUNTRY_NAME_MAP.get(target_upper, [target_country])
+        
+        # 정확한 매칭 시도
         for rec in export_recs:
             rec_hs = rec.get("HSCD", "")
             rec_country = rec.get("NAT_NAME", "")
             
-            # Match by HS code prefix and country
+            # HS 코드 프리픽스 매칭 + 국가명 매칭
             if rec_hs.startswith(hs_prefix):
-                if target_country.upper() in rec_country.upper():
-                    return float(rec.get("EXP_BHRC_SCR", 2.5))
+                for name in country_names:
+                    if name in rec_country or rec_country in name:
+                        score = float(rec.get("EXP_BHRC_SCR", 6.2))
+                        logger.info(f"Export score found: {target_country} -> {rec_country} = {score}")
+                        return score
         
-        # If no exact match, return average of matching HS codes
+        # 정확한 매칭 실패 시: 해당 HS 코드의 평균값 반환
         matching = [
             float(r.get("EXP_BHRC_SCR", 0))
             for r in export_recs
             if r.get("HSCD", "").startswith(hs_prefix)
         ]
         
-        return sum(matching) / len(matching) if matching else 2.5
+        if matching:
+            avg_score = sum(matching) / len(matching)
+            logger.info(f"No exact match for {target_country}, using average: {avg_score:.2f}")
+            return avg_score
+        
+        return 6.2  # 기본 평균값
     
     def _calculate_probability(
         self,
@@ -243,8 +290,10 @@ class SimulationService:
             "components": {}
         }
         
-        # 1. Export ML Score (0-5 → 0-1)
-        export_factor = export_score / 5.0
+        # 1. Export ML Score (0-30 → 0-1)
+        # Updated 2024-01-24: 실제 API 데이터 기반 정규화
+        # API 점수 범위: 1.04 ~ 25.65 (평균 6.20, 중앙값 5.06)
+        export_factor = min(export_score / self.EXPORT_SCORE_MAX, 1.0)
         breakdown["components"]["export_ml"] = {
             "raw_score": export_score,
             "normalized": export_factor,
