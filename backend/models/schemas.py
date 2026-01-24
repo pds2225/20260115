@@ -83,8 +83,8 @@ class CountryRecommendation(BaseModel):
     success_score: float = Field(
         ..., 
         ge=0, 
-        le=5,
-        description="ML-predicted success score (0-5)"
+        le=30,  # Updated: 실제 API 데이터 범위 (1.04 ~ 25.65)
+        description="ML-predicted success score (EXP_BHRC_SCR, 0-30 range)"
     )
     success_probability: float = Field(
         ...,
