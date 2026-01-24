@@ -27,6 +27,11 @@ from ..models.schemas import (
     SimulationRequest,
     SimulationResult,
 )
+from ..database import (
+    get_market_size,
+    get_industry_by_hs_code,
+    COUNTRY_MARKET_DATA,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -116,11 +121,14 @@ class SimulationService:
             product_count=len(results.get("product_info", []))
         )
         
-        # Estimate market size
-        market_size = self._estimate_market_size(
-            results.get("country_info", {}),
-            request.market_size_estimate
+        # Estimate market size (GDP × 산업비중 기반 개선된 로직)
+        market_result = self._estimate_market_size(
+            country_code=request.target_country,
+            hs_code=request.hs_code,
+            country_info=results.get("country_info", {}),
+            user_estimate=request.market_size_estimate
         )
+        market_size = market_result["market_size"]
         
         # Calculate revenue projections
         revenue_min, revenue_max = self._calculate_revenue(
@@ -135,6 +143,14 @@ class SimulationService:
         market_share_max = (revenue_max / market_size * 100) if market_size > 0 else 0
         
         country_info = results.get("country_info", {})
+        
+        # breakdown에 시장규모 계산 상세 추가
+        breakdown["market_estimation"] = {
+            "market_size_usd": market_size,
+            "source": market_result["source"],
+            "confidence": market_result["confidence"],
+            "details": market_result["breakdown"]
+        }
         
         return SimulationResult(
             target_country=request.target_country,
@@ -158,7 +174,8 @@ class SimulationService:
             data_sources=[
                 "KOTRA 수출유망추천정보",
                 "KOTRA 국가정보",
-                "KOTRA 해외시장뉴스"
+                "KOTRA 해외시장뉴스",
+                "시장규모 산정: " + market_result["source"]
             ],
             generated_at=datetime.utcnow()
         )
@@ -311,28 +328,94 @@ class SimulationService:
     
     def _estimate_market_size(
         self,
+        country_code: str,
+        hs_code: str,
         country_info: Dict[str, Any],
         user_estimate: Optional[float]
-    ) -> float:
-        """Estimate market size.
+    ) -> Dict[str, Any]:
+        """Estimate market size using GDP-based industry calculation.
+        
+        Updated 2024-01-24: GDP × 산업비중 기반 동적 계산
         
         Args:
-            country_info: Country economic data
+            country_code: Target country code (US, CN, JP, etc.)
+            hs_code: HS code for industry mapping
+            country_info: Country economic data from API
             user_estimate: User-provided estimate in USD millions
             
         Returns:
-            Market size in USD
+            Dict with market_size, source, confidence, breakdown
         """
-        if user_estimate:
-            return user_estimate * 1_000_000
+        result = {
+            "market_size": 100_000_000,  # Default $100M
+            "source": "default",
+            "confidence": "low",
+            "breakdown": {}
+        }
         
-        # Use GDP as proxy (assume 0.1% of GDP for specific product market)
+        # Priority 1: User-provided estimate
+        if user_estimate:
+            result["market_size"] = user_estimate * 1_000_000
+            result["source"] = "user_estimate"
+            result["confidence"] = "high"
+            result["breakdown"]["user_estimate_millions"] = user_estimate
+            return result
+        
+        # Priority 2: GDP × 산업비중 기반 계산 (database.py 활용)
+        industry_info = get_industry_by_hs_code(hs_code)
+        industry_kr = industry_info.get("industry_kr", "기타")
+        
+        market_data = get_market_size(country_code, industry_kr)
+        
+        if market_data.get("source") != "default":
+            result["market_size"] = market_data["market_size_usd"]
+            result["source"] = market_data["source"]
+            result["confidence"] = market_data["confidence"]
+            result["breakdown"] = {
+                "country": country_code,
+                "industry": industry_kr,
+                "industry_en": industry_info.get("industry_en"),
+                "gdp_usd": market_data.get("gdp_usd"),
+                "industry_ratio": market_data.get("industry_ratio"),
+                "growth_rate": market_data.get("growth_rate"),
+                "calculation_method": "GDP × industry_ratio"
+            }
+            return result
+        
+        # Priority 3: API에서 받은 GDP 정보로 계산
         gdp = country_info.get("gdp")
         if gdp:
-            return gdp * 1_000_000_000 * 0.001  # 0.1% of GDP
+            # 산업별 기본 비중 (화장품: 0.5%, 의약품: 3%, 식품: 1%)
+            industry_ratios = {
+                "화장품": 0.005,
+                "의약품": 0.03,
+                "식품": 0.01,
+                "전자기기": 0.02,
+                "섬유": 0.008,
+                "기타": 0.005
+            }
+            ratio = industry_ratios.get(industry_kr, 0.005)
+            market_size = gdp * 1_000_000_000 * ratio
+            
+            result["market_size"] = market_size
+            result["source"] = "api_gdp_estimate"
+            result["confidence"] = "medium"
+            result["breakdown"] = {
+                "country": country_code,
+                "industry": industry_kr,
+                "gdp_billions": gdp,
+                "industry_ratio": ratio,
+                "calculation_method": "API_GDP × default_industry_ratio"
+            }
+            return result
         
-        # Default fallback
-        return 100_000_000  # $100M default
+        # Fallback: 기본값
+        result["breakdown"] = {
+            "country": country_code,
+            "industry": industry_kr,
+            "reason": "No GDP data available"
+        }
+        return result
     
     def _calculate_revenue(
         self,

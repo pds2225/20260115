@@ -290,9 +290,9 @@ class MatchResult(BaseModel):
     
     # Scoring
     fit_score: float = Field(..., ge=0, le=100, description="Fit score (0-100)")
-    score_breakdown: Dict[str, float] = Field(
+    score_breakdown: Dict[str, Any] = Field(
         default={},
-        description="Score component breakdown"
+        description="Score component breakdown (includes base, hs_code_match, price_compatible, moq_compatible, certification_match, fraud_risk_penalty, success_case_bonus, fraud_types_detail)"
     )
     
     # Match details

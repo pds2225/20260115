@@ -5,14 +5,14 @@ Provides buyer-seller matching based on:
 2. KOTRA 무역사기사례 API (fraud risk penalty)
 3. KOTRA 기업성공사례 API (success case references)
 
-FitScore Formula (0-100):
+FitScore Formula (0-100) - Updated 2024-01-24:
 - Base: 50 points
 - HS Code Match (4-digit): +20 points
 - Price Compatibility: +15 points
 - MOQ Compatibility: +10 points
 - Certification Match: +5 points per match (max +15)
-- Fraud Risk Penalty: -15 to 0 points
-- Success Case Bonus: +5 points if similar cases exist
+- Fraud Risk Penalty: -20 to 0 points (유형별 차등 적용)
+- Success Case Bonus: +5~15 points (산업 매칭 시 추가 보너스)
 """
 
 import asyncio
@@ -27,7 +27,15 @@ from ..models.schemas import (
     MatchResult,
     ProfileType,
 )
-from ..database import load_seller_profiles, load_buyer_profiles
+from ..database import (
+    load_seller_profiles, 
+    load_buyer_profiles,
+    get_industry_by_hs_code,
+    get_fraud_penalty,
+    get_country_fraud_summary,
+    FRAUD_TYPE_WEIGHTS,
+    COUNTRY_MARKET_DATA,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,15 +49,12 @@ class MatchingService:
     PRICE_MATCH_BONUS = 15
     MOQ_MATCH_BONUS = 10
     CERT_MATCH_BONUS = 5  # Per certification, max 15
-    SUCCESS_CASE_BONUS = 5
+    SUCCESS_CASE_BONUS_BASE = 5
+    SUCCESS_CASE_BONUS_INDUSTRY = 10  # 동일 산업 성공사례 시 추가
     
-    # Fraud risk penalties
-    FRAUD_PENALTIES = {
-        "HIGH": -15,
-        "MEDIUM": -7,
-        "LOW": -3,
-        "SAFE": 0
-    }
+    # Fraud risk penalties (유형별 차등 적용 - database.py에서 가져옴)
+    # 이메일해킹: -20, 금품사취: -18, 선적서류위조: -15, 품질사기: -12, 기업사칭: -15
+    FRAUD_PENALTY_CAP = -25  # 최대 페널티 측
     
     def __init__(self, kotra_client: Optional[KotraAPIClient] = None):
         """Initialize matching service.
@@ -207,6 +212,8 @@ class MatchingService:
     ) -> tuple[float, Dict[str, float]]:
         """Calculate FitScore for a candidate.
         
+        Updated 2024-01-24: 무역사기 유형별 차등 페널티 + 산업 매칭 보너스 추가
+        
         Args:
             profile: User's profile
             candidate: Candidate profile
@@ -220,10 +227,10 @@ class MatchingService:
         total = self.BASE_SCORE
         
         # 1. HS Code Match (+20)
-        if self._check_hs_match(
-            profile.get("hs_code", ""),
-            candidate.get("hs_code", "")
-        ):
+        profile_hs = profile.get("hs_code", "")
+        candidate_hs = candidate.get("hs_code", "")
+        
+        if self._check_hs_match(profile_hs, candidate_hs):
             breakdown["hs_code_match"] = self.HS_MATCH_BONUS
             total += self.HS_MATCH_BONUS
         else:
@@ -240,8 +247,6 @@ class MatchingService:
             breakdown["price_compatible"] = 0
         
         # 3. MOQ Compatibility (+10)
-        # For sellers: buyer MOQ should be >= seller MOQ
-        # For buyers: seller MOQ should be <= buyer acceptable MOQ
         profile_moq = profile.get("moq", 0)
         candidate_moq = candidate.get("moq", 0)
         
@@ -252,7 +257,7 @@ class MatchingService:
             else:
                 breakdown["moq_compatible"] = 0
         else:
-            breakdown["moq_compatible"] = self.MOQ_MATCH_BONUS // 2  # Partial credit
+            breakdown["moq_compatible"] = self.MOQ_MATCH_BONUS // 2
             total += self.MOQ_MATCH_BONUS // 2
         
         # 4. Certification Match (+5 per, max 15)
@@ -264,23 +269,94 @@ class MatchingService:
         breakdown["certification_match"] = cert_bonus
         total += cert_bonus
         
-        # 5. Fraud Risk Penalty (-15 to 0)
-        risk_level = fraud_risk.get("risk_level", "SAFE")
-        fraud_penalty = self.FRAUD_PENALTIES.get(risk_level, 0)
+        # 5. Fraud Risk Penalty (유형별 차등 적용, -25 ~ 0)
+        fraud_penalty = self._calculate_fraud_penalty(fraud_risk)
         breakdown["fraud_risk_penalty"] = fraud_penalty
+        breakdown["fraud_types_detail"] = fraud_risk.get("fraud_types", {})
         total += fraud_penalty
         
-        # 6. Success Case Bonus (+5)
-        if success_cases:
-            breakdown["success_case_bonus"] = self.SUCCESS_CASE_BONUS
-            total += self.SUCCESS_CASE_BONUS
-        else:
-            breakdown["success_case_bonus"] = 0
+        # 6. Success Case Bonus (+5 ~ +15, 산업 매칭 시 추가)
+        success_bonus = self._calculate_success_bonus(profile_hs, success_cases)
+        breakdown["success_case_bonus"] = success_bonus
+        total += success_bonus
         
         # Clamp to 0-100
         total = max(0, min(100, total))
         
         return total, breakdown
+    
+    def _calculate_fraud_penalty(
+        self, 
+        fraud_risk: Dict[str, Any]
+    ) -> int:
+        """Calculate fraud penalty based on fraud type distribution.
+        
+        유형별 차등 페널티:
+        - 이메일해킹: -20
+        - 금품사취: -18
+        - 선적서류위조: -15
+        - 기업사칭: -15
+        - 운송사기: -12
+        - 품질사기: -12
+        - 인증서위조: -10
+        - 기타: -8
+        """
+        if not fraud_risk:
+            return 0
+        
+        # 사기 유형별 분포 가져오기
+        fraud_types = fraud_risk.get("fraud_type_distribution", 
+                                      fraud_risk.get("fraud_types", {}))
+        
+        if not fraud_types:
+            # 건수 기반 기본 페널티
+            case_count = fraud_risk.get("case_count", 0)
+            if case_count >= 20:
+                return -20
+            elif case_count >= 10:
+                return -12
+            elif case_count >= 5:
+                return -6
+            return 0
+        
+        # 유형별 가중 페널티 계산
+        total_penalty = 0
+        for fraud_type, count in fraud_types.items():
+            type_info = FRAUD_TYPE_WEIGHTS.get(fraud_type, FRAUD_TYPE_WEIGHTS['기타'])
+            # 건당 페널티의 1/5 적용 (누적 효과)
+            penalty_per_case = type_info['base_penalty'] / 5
+            total_penalty += penalty_per_case * count
+        
+        # 최대 페널티 측
+        return max(self.FRAUD_PENALTY_CAP, int(total_penalty))
+    
+    def _calculate_success_bonus(
+        self,
+        hs_code: str,
+        success_cases: List[Dict[str, Any]]
+    ) -> int:
+        """Calculate success case bonus with industry matching.
+        
+        기본 보너스: +5 (성공사례 존재 시)
+        산업 매칭 보너스: +10 (동일 산업 성공사례 존재 시)
+        """
+        if not success_cases:
+            return 0
+        
+        bonus = self.SUCCESS_CASE_BONUS_BASE
+        
+        # HS코드로 산업 확인
+        industry_info = get_industry_by_hs_code(hs_code)
+        profile_industry = industry_info.get('industry_kr', '')
+        
+        # 성공사례 중 동일 산업 확인
+        for case in success_cases:
+            case_industry = case.get('industry', '')
+            if profile_industry and profile_industry in case_industry:
+                bonus += self.SUCCESS_CASE_BONUS_INDUSTRY
+                break  # 한 건만 매칭되면 보너스 부여
+        
+        return min(bonus, 15)  # 최대 +15
     
     def _check_hs_match(self, hs1: str, hs2: str) -> bool:
         """Check if HS codes match (first 4 digits)."""
@@ -331,16 +407,17 @@ class MatchingService:
         return list(set1 & set2)
     
     def _get_country_name(self, country_code: str) -> str:
-        """Get Korean country name."""
+        """Get Korean country name from COUNTRY_MARKET_DATA."""
+        country_data = COUNTRY_MARKET_DATA.get(country_code.upper(), {})
+        if country_data:
+            return country_data.get('name_kr', country_code)
+        
+        # Fallback
         NAMES = {
-            "US": "미국",
-            "CN": "중국",
-            "JP": "일본",
-            "VN": "베트남",
-            "DE": "독일",
-            "GB": "영국",
-            "FR": "프랑스",
-            "KR": "한국",
+            "US": "미국", "CN": "중국", "JP": "일본", "VN": "베트남",
+            "DE": "독일", "GB": "영국", "FR": "프랑스", "KR": "한국",
+            "SG": "싱가포르", "TH": "태국", "ID": "인도네시아", "IN": "인도",
+            "AU": "호주", "AE": "아랍에미리트",
         }
         return NAMES.get(country_code.upper(), country_code)
     
