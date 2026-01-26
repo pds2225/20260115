@@ -76,3 +76,6 @@ logs/
 # Local data
 *.db
 *.sqlite
+
+# Runtime cache
+cache/
