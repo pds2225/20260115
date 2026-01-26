@@ -196,16 +196,106 @@ webapp/
 │   │   └── matching.py            # /match 라우터
 │   ├── services/
 │   │   ├── kotra_client.py        # KOTRA API 통합 클라이언트
+│   │   ├── recommendation_service.py  # 추천 로직
 │   │   ├── simulation_service.py  # 시뮬레이션 로직
 │   │   └── matching_service.py    # 매칭 로직
 │   ├── models/
 │   │   └── schemas.py             # Pydantic 모델
+│   ├── utils/                     # 유틸리티 모듈 (NEW)
+│   │   ├── cache.py               # TTL 캐시
+│   │   ├── compliance.py          # 수출제한국 검사
+│   │   ├── confidence.py          # 신뢰도 계산
+│   │   └── missing_data.py        # 결측치 처리
 │   └── database/
 │       └── database.py            # 시드데이터 + 헬퍼 함수
+├── config/                        # 설정 파일 (NEW)
+│   └── export_blocklist.json      # 수출제한국 목록
+├── tests/                         # 테스트 (NEW)
+│   ├── test_recommendation.py     # 추천 테스트 (8개)
+│   ├── test_matching.py           # 매칭 테스트 (10개)
+│   └── test_simulation.py         # 시뮬레이션 테스트 (11개)
 ├── requirements.txt
 ├── .env
 └── README.md
 ```
+
+## 🆕 2026-01-26 주요 개선사항
+
+### 1. Fallback 시스템 고도화
+- 기존: KOTRA API 장애 시 고정 5개국(US, JP, CN, DE, VN) 반환
+- 개선: 14일 TTL 캐시 + 25개국 풀 기반 대체 스코어링
+- `backend/utils/cache.py`: TTLCache 구현
+
+### 2. MOQ (최소주문수량) 고도화
+- **Hard Gate**: buyer_moq > seller_capacity → 즉시 reject
+- **Soft Score**: 0~1 점수화 (`1 - abs(diff) / max(buyer, seller)`)
+- **MOV**: 최소 주문 금액(USD) 검증
+- 매칭 응답에 `moq_gate_passed`, `moq_score`, `order_value_usd` 필드 추가
+
+### 3. 인증 매칭 개선
+- **required_certs**: 필수 인증 (미충족 시 탈락)
+- **preferred_certs**: 선호 인증 (충족 시 가점)
+- 매칭 응답에 `missing_required_certs`, `matched_preferred_certs` 필드 추가
+
+### 4. 성공사례 보너스 개선
+- 기존: 성공사례 존재 여부만 확인
+- 개선: 근거 강도(Evidence Strength) 기반 점수화
+```
+bonus = 10 × country_match × hs_similarity × recency
+- country_match: 국가 일치 시 1.0, 불일치 시 0
+- hs_similarity: 4자리 일치 1.0, 2자리 일치 0.5, 불일치 0.2
+- recency: 1년 이내 1.0, 2년 0.8, 3년 0.5, 그 외 0.3
+```
+
+### 5. 수출제한국 관리 (Export Blocklist)
+- **hard_block**: KP, SY, IR, CU → 완전 제외 (success_probability=0)
+- **restricted**: RU, BY, VE, MM, AF → 경고 + 점수 페널티
+- `config/export_blocklist.json`: 블랙리스트 설정 파일
+- `backend/utils/compliance.py`: ComplianceChecker 구현
+
+### 6. 결측치 처리 + 신뢰도 계산
+- **No Zero Fill**: 0 대신 지역 평균/LOCF 사용
+- **신뢰도 (0-1)**: 데이터 완전성, 소스 다양성, fallback 사용 여부 기반
+- `backend/utils/missing_data.py`: MissingDataHandler 구현
+- `backend/utils/confidence.py`: ConfidenceCalculator 구현
+
+### 7. Explanation 필드 표준화
+모든 API 응답에 일관된 `explanation` 필드 포함:
+```json
+{
+  "explanation": {
+    "kotra_status": "ok",
+    "fallback_used": false,
+    "confidence": 0.85,
+    "data_coverage": {
+      "missing_rate": 0.1,
+      "missing_fields": ["growth_rate"],
+      "imputation_methods": {"growth_rate": "region_avg"}
+    },
+    "warning": null,
+    "interpretation": "높은 신뢰도"
+  },
+  "compliance": {
+    "compliance_status": "ok",
+    "reason": null,
+    "score_penalty": 0,
+    "warning": null
+  }
+}
+```
+
+## 📊 테스트 결과
+
+```
+pytest tests/ -v
+========================= 29 passed in 0.83s =========================
+```
+
+| 테스트 모듈 | 테스트 수 | 상태 |
+|------------|----------|------|
+| test_recommendation.py | 8 | ✅ 통과 |
+| test_matching.py | 10 | ✅ 통과 |
+| test_simulation.py | 11 | ✅ 통과 |
 
 ## ⏳ 미완료 기능
 
@@ -225,5 +315,5 @@ webapp/
 
 ---
 
-**최종 업데이트**: 2026-01-24
-**Git 커밋**: f8889ee (Integrate real KOTRA Export Recommendation API)
+**최종 업데이트**: 2026-01-26
+**주요 개선**: Fallback 시스템, MOQ 고도화, 인증 매칭, 성공사례 보너스, 수출제한국 관리, 신뢰도 계산

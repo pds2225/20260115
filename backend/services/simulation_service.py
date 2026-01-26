@@ -1,24 +1,13 @@
 """Simulation Service
 
-Provides export performance simulation based on:
-1. KOTRA 국가정보 API (economic indicators)
-2. KOTRA 해외시장뉴스 API (news sentiment/risk)
-3. KOTRA 수출유망추천정보 API (ML prediction)
-
-Success Probability Formula:
-- Base: 30%
-- Export Recommendation (predProb): +40% weight
-- Economic Indicators (GDP growth, risk grade): +25% weight
-- News Sentiment (positive/negative keywords): +20% weight
-- Product Trends: +15% weight
-
-Revenue Estimation:
-- Market share assumption: 0.01% - 0.1%
-- Based on import amount (impAmt) from country info
+개선사항 (2026-01-26):
+1. 수출불가국 처리: hard_block 시뮬레이션 거부, restricted 경고
+2. 결측치 처리: LOCF/지역평균 대체, 0으로 채우기 금지
+3. Confidence 계산: 필수 피처 결측률 기반
+4. Explanation 상세화 (kotra_status, fallback_used, confidence, data_coverage)
 """
 
-import asyncio
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 from datetime import datetime
 import logging
 
@@ -26,139 +15,199 @@ from .kotra_client import KotraAPIClient, get_kotra_client
 from ..models.schemas import (
     SimulationRequest,
     SimulationResult,
+    Explanation,
+    DataCoverage,
+    ComplianceInfo,
 )
 from ..database import (
     get_market_size,
     get_industry_by_hs_code,
     COUNTRY_MARKET_DATA,
 )
+from ..utils.compliance import get_compliance_checker, ComplianceStatus
+from ..utils.missing_data import MissingDataHandler
+from ..utils.confidence import ConfidenceCalculator
 
 logger = logging.getLogger(__name__)
 
 
 class SimulationService:
     """Service for simulating export performance."""
-    
-    # Base probability
+
     BASE_PROBABILITY = 0.30
-    
-    # Weight factors
     WEIGHTS = {
-        "export_ml": 0.40,      # ML prediction weight
-        "economic": 0.25,       # Economic indicators
-        "news_sentiment": 0.20, # News analysis
-        "trends": 0.15,         # Product trends
+        "export_ml": 0.40,
+        "economic": 0.25,
+        "news_sentiment": 0.20,
+        "trends": 0.15,
     }
-    
-    # Market share assumptions
-    MIN_MARKET_SHARE = 0.0001  # 0.01%
-    MAX_MARKET_SHARE = 0.001   # 0.1%
-    
-    # Export score normalization (based on actual API data analysis)
-    # API returns scores typically in range 1-30 (max observed: ~25.65)
+    MIN_MARKET_SHARE = 0.0001
+    MAX_MARKET_SHARE = 0.001
     EXPORT_SCORE_MAX = 30.0
-    
+
+    COUNTRY_NAME_MAP = {
+        "US": ["미국"], "CN": ["중국"], "JP": ["일본"], "VN": ["베트남"],
+        "DE": ["독일"], "SG": ["싱가포르"], "TH": ["태국"], "ID": ["인도네시아"],
+        "IN": ["인도"], "AU": ["호주"], "GB": ["영국"], "FR": ["프랑스"],
+        "AE": ["아랍에미리트"], "CA": ["캐나다"], "MX": ["멕시코"],
+    }
+
     def __init__(self, kotra_client: Optional[KotraAPIClient] = None):
-        """Initialize simulation service.
-        
-        Args:
-            kotra_client: KOTRA API client instance
-        """
         self.kotra_client = kotra_client or get_kotra_client()
-    
-    async def simulate(
-        self,
-        request: SimulationRequest
-    ) -> SimulationResult:
-        """Run export performance simulation.
-        
-        Args:
-            request: SimulationRequest with target country and company params
-            
-        Returns:
-            SimulationResult with revenue projections and success probability
-        """
+        self.compliance_checker = get_compliance_checker()
+        self.missing_handler = MissingDataHandler()
+        self.confidence_calc = ConfidenceCalculator()
+
+    async def simulate(self, request: SimulationRequest) -> SimulationResult:
+        """Run export simulation with compliance check and confidence."""
         logger.info(f"Running simulation for {request.target_country}, HS: {request.hs_code}")
-        
-        # Parallel data fetching
-        tasks = {
-            "export_rec": self.kotra_client.get_export_recommendations(
+
+        self.missing_handler.reset()
+        kotra_status = "ok"
+        fallback_used = False
+        data_sources = []
+
+        # 1. Compliance 체크 (수출불가국 처리)
+        status, comp_info = self.compliance_checker.check(request.target_country)
+
+        if status == ComplianceStatus.BLOCKED:
+            return self._create_blocked_result(request, comp_info)
+
+        compliance = None
+        if status == ComplianceStatus.RESTRICTED:
+            compliance = ComplianceInfo(
+                compliance_status="restricted",
+                reason=comp_info.get("reason"),
+                score_penalty=comp_info.get("score_penalty", 0),
+                warning=comp_info.get("warning")
+            )
+
+        # 2. KOTRA API 호출
+        export_rec = []
+        country_info = {}
+        product_info = []
+        news_risk = {}
+
+        try:
+            export_rec = await self.kotra_client.get_export_recommendations(
                 hs_code=request.hs_code,
                 num_rows=100
-            ),
-            "country_info": self.kotra_client.get_country_economic_indicators(
-                country_code=request.target_country
-            ),
-            "product_info": self.kotra_client.get_product_info(
+            )
+            data_sources.append("KOTRA 수출유망추천정보")
+        except Exception as e:
+            logger.warning(f"Export rec API error: {e}")
+            kotra_status = "unavailable"
+            fallback_used = True
+
+        try:
+            country_info = await self.kotra_client.get_country_economic_indicators(
+                request.target_country
+            )
+            data_sources.append("KOTRA 국가정보")
+        except Exception as e:
+            logger.warning(f"Country info API error: {e}")
+            kotra_status = "unavailable"
+            fallback_used = True
+
+        try:
+            product_info = await self.kotra_client.get_product_info(
                 country_code=request.target_country,
                 num_rows=10
-            ),
-        }
-        
-        # Add news analysis if requested
-        if request.include_news_risk:
-            tasks["news_risk"] = self.kotra_client.analyze_news_risk(
-                country_code=request.target_country,
-                num_articles=50
             )
-        
-        results = {}
-        for key, task in tasks.items():
+            data_sources.append("KOTRA 상품DB")
+        except Exception as e:
+            logger.warning(f"Product info API error: {e}")
+
+        if request.include_news_risk:
             try:
-                results[key] = await task
+                news_risk = await self.kotra_client.analyze_news_risk(
+                    country_code=request.target_country,
+                    num_articles=50
+                )
+                data_sources.append("KOTRA 해외시장뉴스")
             except Exception as e:
-                logger.warning(f"Error fetching {key}: {e}")
-                results[key] = {} if key != "export_rec" else []
-        
-        # Extract relevant export recommendation
+                logger.warning(f"News risk API error: {e}")
+
+        # 3. 결측치 처리 (0으로 채우기 금지)
+        processed_info, imputation_methods = self.missing_handler.process_country_info(
+            country_info if isinstance(country_info, dict) else {},
+            request.target_country
+        )
+
+        # 4. Export score 추출
         export_score = self._get_export_score(
-            results.get("export_rec", []),
+            export_rec if isinstance(export_rec, list) else [],
             request.hs_code,
             request.target_country
         )
-        
-        # Calculate success probability
+
+        # 5. 확률 계산
         probability, breakdown = self._calculate_probability(
             export_score=export_score,
-            country_info=results.get("country_info", {}),
-            news_risk=results.get("news_risk", {}),
-            product_count=len(results.get("product_info", []))
+            country_info=processed_info,
+            news_risk=news_risk if isinstance(news_risk, dict) else {},
+            product_count=len(product_info) if isinstance(product_info, list) else 0,
+            compliance_penalty=comp_info.get("score_penalty", 0)
         )
-        
-        # Estimate market size (GDP × 산업비중 기반 개선된 로직)
+
+        # 6. 시장 규모 추정
         market_result = self._estimate_market_size(
             country_code=request.target_country,
             hs_code=request.hs_code,
-            country_info=results.get("country_info", {}),
+            country_info=processed_info,
             user_estimate=request.market_size_estimate
         )
         market_size = market_result["market_size"]
-        
-        # Calculate revenue projections
+
+        # 7. 매출 계산
         revenue_min, revenue_max = self._calculate_revenue(
             market_size=market_size,
             probability=probability,
             price_per_unit=request.price_per_unit,
             annual_capacity=request.annual_capacity
         )
-        
-        # Market share calculation
+
         market_share_min = (revenue_min / market_size * 100) if market_size > 0 else 0
         market_share_max = (revenue_max / market_size * 100) if market_size > 0 else 0
-        
-        country_info = results.get("country_info", {})
-        
-        # breakdown에 시장규모 계산 상세 추가
+
+        # 시장규모 breakdown 추가
         breakdown["market_estimation"] = {
             "market_size_usd": market_size,
             "source": market_result["source"],
             "confidence": market_result["confidence"],
             "details": market_result["breakdown"]
         }
-        
+
+        # 8. Confidence 계산
+        missing_fields = self.missing_handler.get_missing_fields()
+        confidence, conf_breakdown = self.confidence_calc.calculate(
+            context="simulation",
+            missing_fields=missing_fields,
+            data_sources_used=data_sources,
+            fallback_used=fallback_used,
+            kotra_status=kotra_status
+        )
+
+        data_coverage = self.missing_handler.get_data_coverage()
+
+        explanation = Explanation(
+            kotra_status=kotra_status,
+            fallback_used=fallback_used,
+            confidence=confidence,
+            data_coverage=DataCoverage(
+                missing_rate=data_coverage.get("missing_rate", 0),
+                missing_fields=data_coverage.get("missing_fields", []),
+                imputation_methods=data_coverage.get("imputation_methods", {})
+            ),
+            warning=self.confidence_calc.get_confidence_warning(confidence),
+            interpretation=conf_breakdown.get("interpretation")
+        )
+
+        country_name = processed_info.get("country_name") or self._get_country_name(request.target_country)
+
         return SimulationResult(
             target_country=request.target_country,
-            country_name=country_info.get("country_name", request.target_country),
+            country_name=country_name,
             hs_code=request.hs_code,
             estimated_revenue_min=round(revenue_min, 2),
             estimated_revenue_max=round(revenue_max, 2),
@@ -166,215 +215,191 @@ class SimulationService:
             market_size=market_size,
             market_share_min=round(market_share_min, 4),
             market_share_max=round(market_share_max, 4),
-            news_risk_adjustment=results.get("news_risk") if request.include_news_risk else None,
+            news_risk_adjustment=news_risk if request.include_news_risk and news_risk else None,
             economic_indicators={
-                "gdp": country_info.get("gdp"),
-                "growth_rate": country_info.get("growth_rate"),
-                "inflation_rate": country_info.get("inflation_rate"),
-                "risk_grade": country_info.get("risk_grade"),
-                "exchange_rate": country_info.get("exchange_rate"),
+                "gdp": processed_info.get("gdp"),
+                "growth_rate": processed_info.get("growth_rate"),
+                "inflation_rate": processed_info.get("inflation_rate"),
+                "risk_grade": processed_info.get("risk_grade")
             },
             calculation_breakdown=breakdown,
-            data_sources=[
-                "KOTRA 수출유망추천정보",
-                "KOTRA 국가정보",
-                "KOTRA 해외시장뉴스",
-                "시장규모 산정: " + market_result["source"]
-            ],
+            explanation=explanation,
+            compliance=compliance,
+            data_sources=data_sources,
             generated_at=datetime.utcnow()
         )
-    
-    # 국가 코드-이름 매핑 (API 응답의 NAT_NAME과 매칭용)
-    COUNTRY_NAME_MAP = {
-        "US": ["미국", "United States", "USA"],
-        "CN": ["중국", "China", "PRC"],
-        "JP": ["일본", "Japan"],
-        "VN": ["베트남", "Vietnam"],
-        "DE": ["독일", "Germany"],
-        "SG": ["싱가포르", "Singapore"],
-        "TH": ["태국", "Thailand"],
-        "ID": ["인도네시아", "Indonesia"],
-        "IN": ["인도", "India"],
-        "AU": ["호주", "Australia"],
-        "GB": ["영국", "United Kingdom", "UK"],
-        "FR": ["프랑스", "France"],
-        "MY": ["말레이시아", "Malaysia"],
-        "PH": ["필리핀", "Philippines"],
-        "AE": ["아랍에미리트", "UAE", "United Arab Emirates"],
-        "CA": ["캐나다", "Canada"],
-        "MX": ["멕시코", "Mexico"],
-        "BR": ["브라질", "Brazil"],
-        "NL": ["네덜란드", "Netherlands"],
-        "IT": ["이탈리아", "Italy"],
-        "RU": ["러시아연방", "Russia", "러시아"],
-        "MN": ["몽골", "Mongolia"],
-    }
-    
+
+    def _create_blocked_result(
+        self,
+        request: SimulationRequest,
+        comp_info: Dict[str, Any]
+    ) -> SimulationResult:
+        """차단국에 대한 시뮬레이션 결과 (거부)."""
+        explanation = Explanation(
+            kotra_status="blocked",
+            fallback_used=False,
+            confidence=0.0,
+            data_coverage=DataCoverage(missing_rate=1.0, missing_fields=[], imputation_methods={}),
+            warning=f"수출 금지 대상국: {comp_info.get('reason')}",
+            interpretation="시뮬레이션 불가 - 수출 금지 국가"
+        )
+
+        compliance = ComplianceInfo(
+            compliance_status="blocked",
+            reason=comp_info.get("reason"),
+            score_penalty=-100,
+            warning=comp_info.get("action")
+        )
+
+        return SimulationResult(
+            target_country=request.target_country,
+            country_name=request.target_country,
+            hs_code=request.hs_code,
+            estimated_revenue_min=0.0,
+            estimated_revenue_max=0.0,
+            success_probability=0.0,
+            market_size=0.0,
+            market_share_min=0.0,
+            market_share_max=0.0,
+            news_risk_adjustment=None,
+            economic_indicators={},
+            calculation_breakdown={
+                "status": "blocked",
+                "reason": comp_info.get("reason")
+            },
+            explanation=explanation,
+            compliance=compliance,
+            data_sources=[],
+            generated_at=datetime.utcnow()
+        )
+
     def _get_export_score(
         self,
-        export_recs: list,
+        export_recs: List[Dict[str, Any]],
         hs_code: str,
         target_country: str
     ) -> float:
-        """Extract export score for target country.
-        
-        Updated 2024-01-24: 실제 API 데이터 기반
-        - API 점수 범위: 1.04 ~ 25.65 (평균 6.20)
-        - 국가명 매칭 개선 (코드 → 한글명)
-        
-        Args:
-            export_recs: List of export recommendations
-            hs_code: Target HS code
-            target_country: Target country code (US, CN, JP, etc.)
-            
-        Returns:
-            Export success score (0-30 range)
-        """
+        """KOTRA API에서 수출 점수 추출."""
         if not export_recs:
-            return 6.2  # Default to average score
-        
+            region = self.missing_handler.get_region(target_country)
+            defaults = {
+                "asia": 7.0, "europe": 6.0, "americas": 8.0,
+                "middle_east": 5.0, "africa": 4.0, "default": 6.2
+            }
+            return defaults.get(region, 6.2)
+
         hs_prefix = hs_code[:4]
-        target_upper = target_country.upper()
-        
-        # 국가명 리스트 가져오기
-        country_names = self.COUNTRY_NAME_MAP.get(target_upper, [target_country])
-        
-        # 정확한 매칭 시도
+        country_names = self.COUNTRY_NAME_MAP.get(target_country.upper(), [target_country])
+
         for rec in export_recs:
-            rec_hs = rec.get("HSCD", "")
-            rec_country = rec.get("NAT_NAME", "")
-            
-            # HS 코드 프리픽스 매칭 + 국가명 매칭
-            if rec_hs.startswith(hs_prefix):
+            if rec.get("HSCD", "").startswith(hs_prefix):
                 for name in country_names:
-                    if name in rec_country or rec_country in name:
-                        score = float(rec.get("EXP_BHRC_SCR", 6.2))
-                        logger.info(f"Export score found: {target_country} -> {rec_country} = {score}")
-                        return score
-        
-        # 정확한 매칭 실패 시: 해당 HS 코드의 평균값 반환
+                    if name in rec.get("NAT_NAME", ""):
+                        return float(rec.get("EXP_BHRC_SCR", 6.2))
+
         matching = [
             float(r.get("EXP_BHRC_SCR", 0))
             for r in export_recs
             if r.get("HSCD", "").startswith(hs_prefix)
         ]
-        
+
         if matching:
-            avg_score = sum(matching) / len(matching)
-            logger.info(f"No exact match for {target_country}, using average: {avg_score:.2f}")
-            return avg_score
-        
-        return 6.2  # 기본 평균값
-    
+            return sum(matching) / len(matching)
+
+        return 6.2
+
     def _calculate_probability(
         self,
         export_score: float,
         country_info: Dict[str, Any],
         news_risk: Dict[str, Any],
-        product_count: int
+        product_count: int,
+        compliance_penalty: int = 0
     ) -> Tuple[float, Dict[str, Any]]:
-        """Calculate success probability.
-        
-        Args:
-            export_score: ML export score (0-5)
-            country_info: Country economic indicators
-            news_risk: News sentiment analysis
-            product_count: Number of product trends found
-            
-        Returns:
-            Tuple of (probability, breakdown dict)
-        """
+        """성공 확률 계산."""
         breakdown = {
             "base_probability": self.BASE_PROBABILITY,
             "weights": self.WEIGHTS.copy(),
             "components": {}
         }
-        
-        # 1. Export ML Score (0-30 → 0-1)
-        # Updated 2024-01-24: 실제 API 데이터 기반 정규화
-        # API 점수 범위: 1.04 ~ 25.65 (평균 6.20, 중앙값 5.06)
+
+        # 1. Export ML score
         export_factor = min(export_score / self.EXPORT_SCORE_MAX, 1.0)
         breakdown["components"]["export_ml"] = {
             "raw_score": export_score,
-            "normalized": export_factor,
-            "contribution": export_factor * self.WEIGHTS["export_ml"]
+            "normalized": round(export_factor, 3),
+            "contribution": round(export_factor * self.WEIGHTS["export_ml"], 3)
         }
-        
-        # 2. Economic Indicators
-        economic_factor = 0.5  # Base
-        
-        if country_info:
-            growth_rate = country_info.get("growth_rate")
-            risk_grade = country_info.get("risk_grade", "")
-            
-            # Growth rate bonus
-            if growth_rate:
-                if growth_rate > 5:
-                    economic_factor += 0.3
-                elif growth_rate > 3:
-                    economic_factor += 0.2
-                elif growth_rate > 1:
-                    economic_factor += 0.1
-                elif growth_rate < 0:
-                    economic_factor -= 0.2
-            
-            # Risk grade adjustment
-            if risk_grade in ["A", "AA", "AAA"]:
+
+        # 2. Economic score
+        economic_factor = 0.5
+        growth_rate = country_info.get("growth_rate")
+        if growth_rate:
+            if growth_rate > 5:
+                economic_factor += 0.3
+            elif growth_rate > 3:
                 economic_factor += 0.2
-            elif risk_grade in ["B", "BB", "BBB"]:
+            elif growth_rate > 1:
                 economic_factor += 0.1
-            elif risk_grade in ["D", "DD", "DDD", "E"]:
-                economic_factor -= 0.2
-        
+
+        risk_grade = country_info.get("risk_grade", "")
+        if risk_grade in ["A", "AA", "AAA"]:
+            economic_factor += 0.2
+        elif risk_grade in ["B", "BB", "BBB"]:
+            economic_factor += 0.1
+        elif risk_grade in ["D", "DD", "E"]:
+            economic_factor -= 0.1
+
         economic_factor = max(0, min(1, economic_factor))
         breakdown["components"]["economic"] = {
-            "growth_rate": country_info.get("growth_rate"),
-            "risk_grade": country_info.get("risk_grade"),
-            "factor": economic_factor,
-            "contribution": economic_factor * self.WEIGHTS["economic"]
+            "factor": round(economic_factor, 3),
+            "growth_rate": growth_rate,
+            "risk_grade": risk_grade,
+            "contribution": round(economic_factor * self.WEIGHTS["economic"], 3)
         }
-        
-        # 3. News Sentiment
-        news_factor = 0.5  # Neutral base
-        
+
+        # 3. News sentiment
+        news_factor = 0.5
         if news_risk:
             risk_adjustment = news_risk.get("risk_adjustment", 0)
-            # Convert -15 to +15 range to 0-1
             news_factor = 0.5 + (risk_adjustment / 30)
             news_factor = max(0, min(1, news_factor))
-        
+
         breakdown["components"]["news_sentiment"] = {
-            "risk_adjustment": news_risk.get("risk_adjustment", 0),
-            "positive_count": news_risk.get("positive_count", 0),
-            "negative_count": news_risk.get("negative_count", 0),
-            "factor": news_factor,
-            "contribution": news_factor * self.WEIGHTS["news_sentiment"]
+            "factor": round(news_factor, 3),
+            "adjustment": news_risk.get("risk_adjustment", 0) if news_risk else 0,
+            "contribution": round(news_factor * self.WEIGHTS["news_sentiment"], 3)
         }
-        
-        # 4. Product Trends
+
+        # 4. Trends
         trend_factor = min(1.0, 0.3 + (product_count * 0.1))
         breakdown["components"]["trends"] = {
+            "factor": round(trend_factor, 3),
             "product_count": product_count,
-            "factor": trend_factor,
-            "contribution": trend_factor * self.WEIGHTS["trends"]
+            "contribution": round(trend_factor * self.WEIGHTS["trends"], 3)
         }
-        
-        # Calculate final probability
+
+        # 가중 합계
         weighted_sum = (
             export_factor * self.WEIGHTS["export_ml"] +
             economic_factor * self.WEIGHTS["economic"] +
             news_factor * self.WEIGHTS["news_sentiment"] +
             trend_factor * self.WEIGHTS["trends"]
         )
-        
-        # Scale and clamp
+
         probability = self.BASE_PROBABILITY + (weighted_sum * 0.65)
+
+        # Compliance 패널티 적용
+        if compliance_penalty:
+            penalty_factor = 1.0 + (compliance_penalty / 100)
+            probability *= max(0.3, penalty_factor)
+            breakdown["compliance_penalty"] = compliance_penalty
+
         probability = max(0.05, min(0.95, probability))
-        
-        breakdown["final_probability"] = probability
-        
+        breakdown["final_probability"] = round(probability, 3)
+
         return probability, breakdown
-    
+
     def _estimate_market_size(
         self,
         country_code: str,
@@ -382,90 +407,40 @@ class SimulationService:
         country_info: Dict[str, Any],
         user_estimate: Optional[float]
     ) -> Dict[str, Any]:
-        """Estimate market size using GDP-based industry calculation.
-        
-        Updated 2024-01-24: GDP × 산업비중 기반 동적 계산
-        
-        Args:
-            country_code: Target country code (US, CN, JP, etc.)
-            hs_code: HS code for industry mapping
-            country_info: Country economic data from API
-            user_estimate: User-provided estimate in USD millions
-            
-        Returns:
-            Dict with market_size, source, confidence, breakdown
-        """
-        result = {
-            "market_size": 100_000_000,  # Default $100M
+        """시장 규모 추정."""
+        if user_estimate:
+            return {
+                "market_size": user_estimate * 1_000_000,
+                "source": "user_estimate",
+                "confidence": "high",
+                "breakdown": {"user_provided": True}
+            }
+
+        industry_info = get_industry_by_hs_code(hs_code)
+        industry_kr = industry_info.get("industry_kr", "기타")
+
+        market_data = get_market_size(country_code, industry_kr)
+
+        if market_data.get("source") != "default":
+            return {
+                "market_size": market_data["market_size_usd"],
+                "source": market_data["source"],
+                "confidence": market_data["confidence"],
+                "breakdown": {
+                    "country": country_code,
+                    "industry": industry_kr,
+                    "gdp_usd": market_data.get("gdp_usd"),
+                    "industry_ratio": market_data.get("industry_ratio")
+                }
+            }
+
+        return {
+            "market_size": 100_000_000,
             "source": "default",
             "confidence": "low",
             "breakdown": {}
         }
-        
-        # Priority 1: User-provided estimate
-        if user_estimate:
-            result["market_size"] = user_estimate * 1_000_000
-            result["source"] = "user_estimate"
-            result["confidence"] = "high"
-            result["breakdown"]["user_estimate_millions"] = user_estimate
-            return result
-        
-        # Priority 2: GDP × 산업비중 기반 계산 (database.py 활용)
-        industry_info = get_industry_by_hs_code(hs_code)
-        industry_kr = industry_info.get("industry_kr", "기타")
-        
-        market_data = get_market_size(country_code, industry_kr)
-        
-        if market_data.get("source") != "default":
-            result["market_size"] = market_data["market_size_usd"]
-            result["source"] = market_data["source"]
-            result["confidence"] = market_data["confidence"]
-            result["breakdown"] = {
-                "country": country_code,
-                "industry": industry_kr,
-                "industry_en": industry_info.get("industry_en"),
-                "gdp_usd": market_data.get("gdp_usd"),
-                "industry_ratio": market_data.get("industry_ratio"),
-                "growth_rate": market_data.get("growth_rate"),
-                "calculation_method": "GDP × industry_ratio"
-            }
-            return result
-        
-        # Priority 3: API에서 받은 GDP 정보로 계산
-        gdp = country_info.get("gdp")
-        if gdp:
-            # 산업별 기본 비중 (화장품: 0.5%, 의약품: 3%, 식품: 1%)
-            industry_ratios = {
-                "화장품": 0.005,
-                "의약품": 0.03,
-                "식품": 0.01,
-                "전자기기": 0.02,
-                "섬유": 0.008,
-                "기타": 0.005
-            }
-            ratio = industry_ratios.get(industry_kr, 0.005)
-            market_size = gdp * 1_000_000_000 * ratio
-            
-            result["market_size"] = market_size
-            result["source"] = "api_gdp_estimate"
-            result["confidence"] = "medium"
-            result["breakdown"] = {
-                "country": country_code,
-                "industry": industry_kr,
-                "gdp_billions": gdp,
-                "industry_ratio": ratio,
-                "calculation_method": "API_GDP × default_industry_ratio"
-            }
-            return result
-        
-        # Fallback: 기본값
-        result["breakdown"] = {
-            "country": country_code,
-            "industry": industry_kr,
-            "reason": "No GDP data available"
-        }
-        return result
-    
+
     def _calculate_revenue(
         self,
         market_size: float,
@@ -473,36 +448,31 @@ class SimulationService:
         price_per_unit: float,
         annual_capacity: int
     ) -> Tuple[float, float]:
-        """Calculate revenue projections.
-        
-        Args:
-            market_size: Total market size in USD
-            probability: Success probability
-            price_per_unit: Price per unit in USD
-            annual_capacity: Annual production capacity
-            
-        Returns:
-            Tuple of (min_revenue, max_revenue) in USD
-        """
-        # Capacity-based max revenue
+        """예상 매출 계산."""
         capacity_revenue = price_per_unit * annual_capacity
-        
-        # Market share based revenue
+
         market_revenue_min = market_size * self.MIN_MARKET_SHARE
         market_revenue_max = market_size * self.MAX_MARKET_SHARE
-        
-        # Adjust by probability
+
         adjusted_min = market_revenue_min * probability
         adjusted_max = market_revenue_max * probability
-        
-        # Cap by capacity
+
         final_min = min(adjusted_min, capacity_revenue * 0.3)
         final_max = min(adjusted_max, capacity_revenue * 0.8)
-        
+
         return final_min, final_max
 
+    def _get_country_name(self, country_code: str) -> str:
+        """국가 코드 → 한글명."""
+        names = self.COUNTRY_NAME_MAP.get(country_code.upper(), [])
+        if names:
+            return names[0]
 
-# Singleton service instance
+        country_data = COUNTRY_MARKET_DATA.get(country_code.upper(), {})
+        return country_data.get("name_kr", country_code)
+
+
+# Singleton
 _service_instance: Optional[SimulationService] = None
 
 

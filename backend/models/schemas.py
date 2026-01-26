@@ -2,15 +2,50 @@
 
 Defines data models for:
 - Recommendation API
-- Simulation API  
+- Simulation API
 - Matching API
 - KOTRA API response models
+
+Updated 2026-01-26:
+- Added explanation field with kotra_status, fallback_used, confidence, data_coverage
+- Added required_certs, preferred_certs for certification matching
+- Added MOQ gate fields (moq_gate_passed, moq_score, order_value_usd)
+- Added compliance_status for export blocklist
 """
 
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from enum import Enum
 from datetime import datetime
+
+
+# =============================================================================
+# Explanation & Confidence Models
+# =============================================================================
+
+class DataCoverage(BaseModel):
+    """데이터 커버리지 정보."""
+    missing_rate: float = Field(0.0, ge=0, le=1, description="결측률 (0-1)")
+    missing_fields: List[str] = Field(default=[], description="결측 필드 목록")
+    imputation_methods: Dict[str, str] = Field(default={}, description="대체 방법")
+
+
+class Explanation(BaseModel):
+    """결과 설명 정보."""
+    kotra_status: str = Field("ok", description="KOTRA API 상태 (ok/unavailable)")
+    fallback_used: bool = Field(False, description="fallback 데이터 사용 여부")
+    confidence: float = Field(1.0, ge=0, le=1, description="신뢰도 (0-1)")
+    data_coverage: DataCoverage = Field(default_factory=DataCoverage)
+    warning: Optional[str] = Field(None, description="경고 메시지")
+    interpretation: Optional[str] = Field(None, description="신뢰도 해석")
+
+
+class ComplianceInfo(BaseModel):
+    """규정 준수 정보."""
+    compliance_status: str = Field("ok", description="ok/restricted/blocked")
+    reason: Optional[str] = Field(None, description="제한/차단 사유")
+    score_penalty: int = Field(0, description="점수 페널티")
+    warning: Optional[str] = Field(None, description="경고 메시지")
 
 
 # =============================================================================
@@ -110,10 +145,13 @@ class CountryRecommendation(BaseModel):
         description="Score calculation breakdown"
     )
 
+    # Updated 2026-01-26: compliance 추가
+    compliance: Optional[ComplianceInfo] = Field(None, description="규정 준수 정보")
+
 
 class RecommendationResponse(BaseModel):
     """Response model for /recommend endpoint."""
-    
+
     hs_code: str
     goal: ExportGoal
     total_countries_analyzed: int
@@ -121,6 +159,12 @@ class RecommendationResponse(BaseModel):
     data_sources: List[str] = Field(
         default=["KOTRA 수출유망추천정보", "KOTRA 국가정보", "KOTRA 상품DB"],
         description="Data sources used"
+    )
+    # Updated 2026-01-26: explanation 추가
+    explanation: Explanation = Field(default_factory=Explanation)
+    excluded_countries: List[Dict[str, str]] = Field(
+        default=[],
+        description="제외된 국가 목록 (blocked/restricted)"
     )
     generated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -210,7 +254,11 @@ class SimulationResult(BaseModel):
         default={},
         description="Detailed calculation breakdown"
     )
-    
+
+    # Updated 2026-01-26: explanation + compliance 추가
+    explanation: Explanation = Field(default_factory=Explanation)
+    compliance: Optional[ComplianceInfo] = Field(None, description="규정 준수 정보")
+
     # Metadata
     data_sources: List[str] = Field(default=[])
     generated_at: datetime = Field(default_factory=datetime.utcnow)
@@ -222,7 +270,7 @@ class SimulationResult(BaseModel):
 
 class ProfileBase(BaseModel):
     """Base profile model for buyer/seller."""
-    
+
     hs_code: str = Field(..., description="Product HS Code")
     country: str = Field(..., description="Country code")
     price_range: List[float] = Field(
@@ -234,8 +282,20 @@ class ProfileBase(BaseModel):
     moq: int = Field(..., gt=0, description="MOQ requirement")
     certifications: List[str] = Field(
         default=[],
-        description="Required/available certifications"
+        description="Available certifications (deprecated, use required_certs/preferred_certs)"
     )
+    # Updated 2026-01-26: required vs preferred 인증 분리
+    required_certs: List[str] = Field(
+        default=[],
+        description="필수 인증 목록 (미충족 시 탈락)"
+    )
+    preferred_certs: List[str] = Field(
+        default=[],
+        description="선호 인증 목록 (가점)"
+    )
+    # MOQ 고도화
+    annual_capacity: Optional[int] = Field(None, gt=0, description="연간 생산 능력")
+    min_order_usd: Optional[float] = Field(None, ge=0, description="최소 주문 금액 (USD)")
 
 
 class SellerProfile(ProfileBase):
@@ -281,44 +341,60 @@ class MatchRequest(BaseModel):
 
 class MatchResult(BaseModel):
     """Single match result."""
-    
+
     partner_id: str
     partner_type: ProfileType
     company_name: Optional[str] = None
     country: str
     country_name: Optional[str] = None
-    
+
     # Scoring
     fit_score: float = Field(..., ge=0, le=100, description="Fit score (0-100)")
     score_breakdown: Dict[str, Any] = Field(
         default={},
-        description="Score component breakdown (includes base, hs_code_match, price_compatible, moq_compatible, certification_match, fraud_risk_penalty, success_case_bonus, fraud_types_detail)"
+        description="Score component breakdown"
     )
-    
+
     # Match details
     hs_code_match: bool = Field(default=False)
     price_compatible: bool = Field(default=False)
     moq_compatible: bool = Field(default=False)
     certification_match: List[str] = Field(default=[])
-    
+
+    # Updated 2026-01-26: MOQ 고도화 필드
+    moq_gate_passed: bool = Field(True, description="MOQ Hard Gate 통과 여부")
+    moq_score: float = Field(1.0, ge=0, le=1, description="MOQ Soft Score (0-1)")
+    order_value_usd: Optional[float] = Field(None, description="예상 주문 금액 (USD)")
+
+    # Updated 2026-01-26: 인증 매칭 개선
+    missing_required_certs: List[str] = Field(default=[], description="미충족 필수 인증")
+    matched_preferred_certs: List[str] = Field(default=[], description="매칭된 선호 인증")
+
     # Risk analysis
     fraud_risk: Optional[Dict[str, Any]] = Field(None, description="Fraud risk info")
-    
+
+    # Compliance
+    compliance: Optional[ComplianceInfo] = Field(None, description="규정 준수 정보")
+
     # Reference cases
     success_cases: List[Dict[str, Any]] = Field(default=[], description="Relevant success cases")
 
 
 class MatchResponse(BaseModel):
     """Response model for /match endpoint."""
-    
+
     profile_type: ProfileType
     total_candidates: int
     matches: List[MatchResult]
-    
+
     # Risk summary
     countries_analyzed: List[str] = Field(default=[])
     high_risk_countries: List[str] = Field(default=[])
-    
+    blocked_countries: List[str] = Field(default=[], description="차단된 국가 목록")
+
+    # Updated 2026-01-26: explanation 추가
+    explanation: Explanation = Field(default_factory=Explanation)
+
     # Metadata
     data_sources: List[str] = Field(
         default=["KOTRA 무역사기사례", "KOTRA 기업성공사례"],
