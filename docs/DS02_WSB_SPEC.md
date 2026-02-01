@@ -1,6 +1,6 @@
 # DS-02 World Bank 데이터 수집·가공 명세 (WSB 기준)
 
-> **문서 버전**: v1.0
+> **문서 버전**: v1.1 (v1.0에서 실제 CSV 데이터 기반으로 수정)
 > **최종 수정**: 2026-01-28
 > **상위 문서**: 구현 계약서 v1 — 6장(데이터 소스 명세), 7장(데이터 품질·전처리 계약)
 
@@ -24,270 +24,198 @@
 
 ---
 
-## 2. 수집 대상 지표 (WSB 매핑, 7개 고정)
+## 2. 데이터 소스 (v1 확정: CSV 파일 2종)
 
-| WSB Field ID | 지표명 | World Bank Indicator Code | 단위 | 용도 |
-|--------------|--------|---------------------------|------|------|
-| WSB_ECO_01 | GDP (current USD) | `NY.GDP.MKTP.CD` | USD | 로그 스케일 정규화 |
-| WSB_ECO_02 | GDP per capita | `NY.GDP.PCAP.CD` | USD | 구매력 지표 (보조) |
-| WSB_ECO_03 | GDP growth (annual %) | `NY.GDP.MKTP.KD.ZG` | % | 성장성 가점 |
-| WSB_ECO_04 | Import value (goods & services) | `NE.IMP.GNFS.CD` | USD | 수입 수요 규모 |
-| WSB_ECO_05 | Import growth (annual %) | `NE.IMP.GNFS.KD.ZG` | % | 수요 증가율 |
-| WSB_ECO_06 | Inflation (CPI, %) | `FP.CPI.TOTL.ZG` | % | 리스크 페널티 |
-| WSB_ECO_07 | Population | `SP.POP.TOTL` | 명 | 시장 크기 보조지표 |
+### 2.1 파일 목록
 
-> **위 7개 지표 외 World Bank 데이터는 v1 범위에서 사용 금지**
+| 파일명 | 지표 | 내부 필드명 | WB 표준 코드 |
+|--------|------|-----------|-------------|
+| `WB_WDI_NY_GDP_MKTP_CD.csv` | GDP (current USD) | `gdp_usd` | `NY.GDP.MKTP.CD` |
+| `WB_WDI_NY_GDP_MKTP_KD_ZG.csv` | GDP growth (annual %) | `gdp_growth_pct` | `NY.GDP.MKTP.KD.ZG` |
 
-### 2.1 명시적 제외 항목 (Out of Scope)
+> **위 2개 지표 외 World Bank 데이터는 v1 범위에서 사용 금지**
 
-다음 지표는 v1에서 수집·사용하지 않는다:
+### 2.2 CSV 컬럼 구조
 
-- 환율 (Exchange Rate)
-- 실업률 (Unemployment)
-- 제조업 비중 (Manufacturing %)
-- FDI (Foreign Direct Investment)
-- GNI (Gross National Income)
-- PPP 기반 지표
-- World Bank Governance Indicators
+| CSV 컬럼 | 매핑 대상 | 설명 | 예시 |
+|----------|----------|------|------|
+| `REF_AREA` | `country_iso3` | ISO3 국가코드 (변환 불필요) | USA, KOR, VNM |
+| `TIME_PERIOD` | `year` | 연도 (정수) | 2023 |
+| `OBS_VALUE` | `value` | 관측값 | 27292000000000.0 |
+| `INDICATOR` | (식별용) | CSV별 고정값 | WB_WDI_NY_GDP_MKTP_CD |
+| `REF_AREA_LABEL` | `country_name` | 국가명 (참조) | United States |
+| `UNIT_MEASURE` | (참조) | 단위 코드 | USD, PC_A |
+| `OBS_STATUS` | (참조) | 관측 상태 | A (Normal) |
+
+### 2.3 Indicator 코드 변환 규칙
+
+```
+CSV INDICATOR 컬럼         →  내부 필드명        →  WB 표준 코드
+WB_WDI_NY_GDP_MKTP_CD     →  gdp_usd           →  NY.GDP.MKTP.CD
+WB_WDI_NY_GDP_MKTP_KD_ZG  →  gdp_growth_pct    →  NY.GDP.MKTP.KD.ZG
+```
+
+변환 로직: `WB_WDI_` 접두사 제거 + `_` → `.`
+
+### 2.4 데이터 통계 (참조)
+
+| 항목 | GDP 파일 | GDP growth 파일 |
+|------|----------|----------------|
+| 총 레코드 | ~14,561 | ~14,133 |
+| 국가/지역 수 | 262 | 262 |
+| 연도 범위 | 1960~2024 | 1961~2024 |
+| 단위 | current USD | % (연간) |
+
+### 2.5 명시적 제외 항목 (Out of Scope)
+
+- GDP per capita, Import value/growth, Inflation, Population (v2에서 확장 예정)
+- 환율, 실업률, 제조업 비중, FDI, GNI, PPP, Governance Indicators
 
 ---
 
-## 3. 데이터 수집 규칙
+## 3. 데이터 선택 규칙
 
-### 3.1 API 엔드포인트
-
-```
-Base URL: https://api.worldbank.org/v2
-Format: JSON (format=json)
-Per Page: 최대 1000 (per_page=1000)
-```
-
-### 3.2 호출 패턴
-
-```
-GET /v2/country/{iso2}/indicator/{indicator_code}?date={year_range}&format=json&per_page=1000
-```
-
-- `iso2`: ISO 3166-1 alpha-2 국가코드 (ISO3→ISO2 변환 필요)
-- `indicator_code`: 2장의 World Bank Indicator Code
-- `date`: 연도 범위 (예: `2020:2024`)
-
-### 3.3 수집 대상 국가
-
-- DS-03(CEPII)에 존재하는 모든 ISO3 국가의 ISO2 변환 코드
-- ISO3 → ISO2 매핑은 고정 테이블 사용
-
-### 3.4 수집 주기
-
-- **운영**: 스냅샷 기반 (월 1회 또는 수동 트리거)
-- **스냅샷 메타**: `/health` 응답의 `data_sources.DS-02.last_snapshot`에 반영
-
----
-
-## 4. 연도 선택 규칙
-
-### 4.1 최신 유효 연도 선택
+### 3.1 연도 선택
 
 ```text
 target_year = max(year WHERE value IS NOT NULL)
 제약: current_year - target_year ≤ 3
 ```
 
-- 3년 초과 시 → **해당 지표 전체 무효 (결측 처리)**
-- 국가별 연도 혼용 허용 (지표 간 연도 동일 조건 없음)
+- 3년 초과 시 → 해당 지표 무효 (결측 처리)
+- 국가별 연도 혼용 허용 (GDP와 GDP growth의 연도가 달라도 됨)
 
-### 4.2 예시
+### 3.2 권장 기준 연도
 
-| 국가 | GDP 최신 | Import 최신 | 사용 |
-|------|----------|------------|------|
-| VNM | 2023 | 2023 | ✅ 둘 다 사용 |
-| MMR | 2021 | 2020 | ✅ GDP 사용, Import: 2026-2020=6년 → ❌ 무효 |
-| XXX | 2019 | 2019 | ❌ 둘 다 3년 초과 → 후보군 제외 |
+- effective_year: **2024** 또는 **2023** (CSV 최신 데이터 기준)
 
 ---
 
-## 5. 결측값 처리 규칙
+## 4. 결측값·이상값 처리 규칙
 
-### 5.1 필수 지표 결측 → 후보군 제외
+### 4.1 GDP 결측/이상 → 후보군 제외
 
-| 지표 | 결측 시 처리 |
-|------|------------|
-| GDP (`WSB_ECO_01`) | 해당 국가 **후보군 제외** (Hard Filter) |
-| Import value (`WSB_ECO_04`) | 해당 국가 **후보군 제외** (Hard Filter) |
+| 상황 | 처리 |
+|------|------|
+| GDP = null/NaN | 해당 국가 **후보군 제외** (Hard Filter) |
+| GDP = 0 | **결측으로 간주** → 후보군 제외 |
+| GDP < 0 | **이상값** → 후보군 제외 + warning |
 
-### 5.2 선택 지표 결측 → 0점 처리
+### 4.2 GDP growth 결측 → 0점 처리
 
-| 지표 | 결측 시 처리 |
-|------|------------|
-| GDP growth (`WSB_ECO_03`) | 해당 항목 점수 = 0 |
-| Import growth (`WSB_ECO_05`) | 해당 항목 점수 = 0 |
-| Inflation (`WSB_ECO_06`) | 해당 항목 점수 = 0 (페널티 없음) |
-| Population (`WSB_ECO_07`) | 로그 보정에서 제외 |
-| GDP per capita (`WSB_ECO_02`) | 보조지표, 점수 미반영 |
+| 상황 | 처리 |
+|------|------|
+| GDP growth = null/NaN | 해당 항목 점수 = 0 (국가는 유지) |
+| GDP growth = 0 | **유효한 0값** (결측 아님, 정상 처리) |
 
-### 5.3 금지 사항
+### 4.3 금지 사항
 
-- **임의 대체(Imputation) 금지**: 결측값을 평균, 중앙값, 0 등으로 대체하지 않는다
-- **0값 → 결측 치환 금지**: 0으로 제공된 값은 결측이 아닌 실제 값으로 간주
-- **GDP ≤ 0**: 이상값으로 판정 → 후보군 제외 + 로그 + warning 기록
-- **Import value < 0**: 이상값으로 판정 → 후보군 제외 + 로그 + warning 기록
+- 임의 대체(Imputation) 금지: 결측을 평균/중앙값으로 채우지 않는다
 
 ---
 
-## 6. 정규화 규칙 (수식 고정)
+## 5. 정규화 규칙 (수식 고정)
 
-### 6.1 로그 스케일 정규화
-
-적용 대상: GDP, Import value, Population
+### 5.1 GDP → 로그 스케일 min-max 정규화
 
 ```text
-norm(x) = (log(x) - min_log) / (max_log - min_log)
+norm_gdp = (ln(gdp) - min_ln) / (max_ln - min_ln)
 ```
 
-- `log` = 자연로그 (`ln`)
-- `min_log`, `max_log`: 해당 스냅샷의 전체 후보국 기준 최소/최대
+- `ln` = 자연로그
+- `min_ln`, `max_ln`: 해당 스냅샷의 **유효 후보국 전체** 기준
 - 결과 범위: 0 ~ 1
+- 모든 값 동일 시: 0.5 반환
 
-### 6.2 퍼센트 지표 클리핑 + 정규화
-
-적용 대상: GDP growth, Import growth, Inflation
-
-**Step 1: 클리핑**
-
-| 지표 | lower | upper |
-|------|-------|-------|
-| GDP growth (%) | -5 | +10 |
-| Import growth (%) | -5 | +15 |
-| Inflation (%) | 0 | 15 |
+### 5.2 GDP growth → 클리핑 + 0-1 정규화
 
 ```text
-clipped = clip(x, lower, upper)
+Step 1: clipped = clip(gdp_growth, -5, +10)
+Step 2: norm = (clipped - (-5)) / (10 - (-5)) = (clipped + 5) / 15
 ```
 
-**Step 2: 0-1 정규화**
-
-```text
-norm(clipped) = (clipped - lower) / (upper - lower)
-```
-
-| 지표 | 정규화 공식 | 결과 범위 |
-|------|-----------|----------|
-| GDP growth | (clip(x, -5, 10) + 5) / 15 | 0 ~ 1 |
-| Import growth | (clip(x, -5, 15) + 5) / 20 | 0 ~ 1 |
-| Inflation | clip(x, 0, 15) / 15 | 0 ~ 1 |
+| 입력 | 클리핑 | 정규화 |
+|------|--------|--------|
+| -10% | -5% | 0.00 |
+| -5% | -5% | 0.00 |
+| 0% | 0% | 0.33 |
+| 5% | 5% | 0.67 |
+| 10% | 10% | 1.00 |
+| 15% | 10% | 1.00 |
 
 ---
 
-## 7. EconomicScore 산식 (고정)
+## 6. EconomicScore 산식 (v1 확정)
 
-### 7.1 수식
+### 6.1 수식
 
 ```text
-EconomicScore =
-    0.30 × norm(GDP)
-  + 0.25 × norm(ImportValue)
-  + 0.20 × norm_clip(GDP_Growth)
-  + 0.15 × norm_clip(Import_Growth)
-  - 0.10 × norm_clip(Inflation)
+EconomicScore = 0.70 × norm(GDP) + 0.30 × norm_clip(GDP_growth)
 ```
 
-### 7.2 가중치 표
+### 6.2 가중치 표
 
 | 항목 | 가중치 | 방향 | 의미 |
 |------|--------|------|------|
-| GDP | 0.30 | + | 시장 규모 |
-| Import value | 0.25 | + | 수입 수요 |
-| GDP growth | 0.20 | + | 성장성 |
-| Import growth | 0.15 | + | 수요 증가 |
-| Inflation | 0.10 | - | 리스크 감점 |
+| GDP | 0.70 | + | 시장 규모 |
+| GDP growth | 0.30 | + | 성장성 보정 |
 | **합계** | **1.00** | | |
 
-### 7.3 결과 범위
+### 6.3 결과 범위
 
-- 이론적 범위: -0.10 ~ 0.90
+- 이론적 범위: 0 ~ 1.0
+- GDP growth 결측 시: 최대 0.70 (GDP만으로)
 - **최소 0 적용**: `max(0, EconomicScore)`
-- 최종 범위: **0 ~ 1**
-
-### 7.4 결측 항목 처리
-
-- 결측 항목의 기여분 = 0 (가중치 재분배 없음)
-- 예: GDP_growth 결측 → 0.20 × 0 = 0 기여
 
 ---
 
-## 8. 저장 스키마 (WSB)
+## 7. 저장 스키마
 
-### 8.1 레코드 구조
+### 7.1 레코드 예시
 
 ```json
 {
   "country_iso3": "VNM",
-  "country_iso2": "VN",
+  "country_name": "Vietnam",
   "year": 2023,
-  "snapshot_date": "2026-01-28",
   "indicators": {
-    "gdp_usd": 430000000000,
-    "gdp_per_capita_usd": 4400,
-    "gdp_growth_pct": 5.1,
-    "import_value_usd": 345000000000,
-    "import_growth_pct": 8.2,
-    "inflation_pct": 3.4,
-    "population": 100300000
+    "gdp_usd": 434000000000,
+    "gdp_growth_pct": 5.07
   },
   "normalized": {
     "norm_gdp": 0.72,
-    "norm_import_value": 0.68,
-    "norm_gdp_growth": 0.67,
-    "norm_import_growth": 0.66,
-    "norm_inflation": 0.23,
-    "norm_population": 0.75
+    "norm_gdp_growth": 0.67
   },
-  "economic_score": 0.67,
+  "economic_score": 0.70,
   "data_quality": {
     "missing_fields": [],
-    "stale_fields": [],
     "warnings": []
   }
 }
 ```
 
-### 8.2 필드 정의
-
-| 필드 | 타입 | 필수 | 설명 |
-|------|------|------|------|
-| country_iso3 | string(3) | ✅ | ISO 3166-1 alpha-3 |
-| country_iso2 | string(2) | ✅ | ISO 3166-1 alpha-2 |
-| year | integer | ✅ | 데이터 기준 연도 (지표별 최신) |
-| snapshot_date | string(date) | ✅ | 스냅샷 수집일 |
-| indicators.* | number/null | 조건부 | 원본 값 (null = 결측) |
-| normalized.* | number/null | 조건부 | 정규화된 값 (0~1) |
-| economic_score | number | ✅ | 0 ~ 1 |
-| data_quality | object | ✅ | 결측/경고 정보 |
-
 ---
 
-## 9. `/predict` 응답 내 DS-02 반영 규격
+## 8. API 응답 내 DS-02 반영
 
-### 9.1 score_components 내 포함
+### 8.1 `/predict` score_components
 
 ```json
 {
   "score_components": {
-    "economic_score": 0.67,
-    "trade_potential": 52.0,
-    "distance_penalty": -8.4
+    "economic_score": 0.70
   }
 }
 ```
 
-### 9.2 explanation 내 DS-02 관련 정보
+### 8.2 `/predict` explanation
 
 ```json
 {
   "explanation": {
     "top_factors": [
       {"factor": "gdp_usd", "direction": "positive", "source": "DS-02"},
-      {"factor": "import_value_usd", "direction": "positive", "source": "DS-02"}
+      {"factor": "gdp_growth_pct", "direction": "positive", "source": "DS-02"}
     ],
     "data_quality": {
       "missing_fields": [],
@@ -299,23 +227,7 @@ EconomicScore =
 }
 ```
 
-### 9.3 결측 시 warning 예시
-
-```json
-{
-  "data_quality": {
-    "missing_fields": ["gdp_growth_pct", "import_growth_pct"],
-    "warnings": [
-      "DS-02: GDP growth data unavailable for VNM (year 2023)",
-      "DS-02: Import growth data unavailable for VNM (year 2023)"
-    ]
-  }
-}
-```
-
----
-
-## 10. `/health` 응답 내 DS-02 상태
+### 8.3 `/health` DS-02 상태
 
 ```json
 {
@@ -323,10 +235,13 @@ EconomicScore =
     "DS-02": {
       "available": true,
       "last_snapshot": "2026-01-28",
-      "record_count": 195,
-      "year_range": "2021-2023",
-      "indicators_collected": 7,
-      "missing_rate": 0.03
+      "record_count": 262,
+      "year_range": "2021-2024",
+      "indicators_collected": 2,
+      "csv_files": [
+        "WB_WDI_NY_GDP_MKTP_CD.csv",
+        "WB_WDI_NY_GDP_MKTP_KD_ZG.csv"
+      ]
     }
   }
 }
@@ -334,9 +249,9 @@ EconomicScore =
 
 ---
 
-## 11. 전체 Score 통합 위치 (5.4 연계)
+## 9. 전체 Score 통합 위치 (5.4 연계)
 
-DS-02의 `EconomicScore`는 최종 Score 산정(5.4)에서 다음과 같이 사용된다:
+DS-02의 `EconomicScore`는 최종 Score에서 하나의 항목으로 사용:
 
 ```text
 FinalScore = 100 × (
@@ -348,58 +263,47 @@ FinalScore = 100 × (
 )
 ```
 
-> **주의**: 위 통합 수식의 최종 가중치는 별도 "전체 Score 수식 통합본" 문서에서 확정한다.
-> DS-02는 `EconomicScore` 하나의 값으로 합산되어 FinalScore에 투입된다.
-
 ---
 
-## 12. 구현 체크리스트
+## 10. 구현 체크리스트
 
-- [ ] World Bank API 호출 모듈 구현 (7개 indicator code 고정)
-- [ ] ISO3 → ISO2 매핑 테이블 구현
+- [ ] CSV 로더 구현 (REF_AREA, TIME_PERIOD, OBS_VALUE 파싱)
+- [ ] ISO3 코드 직접 사용 (ISO2 변환 불필요)
 - [ ] 연도 선택 로직 구현 (max year, 3년 제약)
-- [ ] 결측 시 국가 제외(GDP, Import) / 0점 처리(Growth, Inflation) 구분
-- [ ] 이상값 판정 (GDP ≤ 0, Import < 0) → 제외 + warning
-- [ ] 로그 정규화 수식 구현 (min-max on log scale)
-- [ ] 클리핑 + 정규화 수식 구현 (3개 퍼센트 지표)
-- [ ] EconomicScore 산식 구현 (가중치 5개 고정)
+- [ ] GDP=0 → 결측 간주 처리
+- [ ] GDP ≤ 0 → 이상값 → 후보군 제외 + warning
+- [ ] GDP growth 결측 → 0점 처리 (국가 유지)
+- [ ] 로그 정규화 수식 구현 (ln + min-max)
+- [ ] 클리핑(-5~+10) + 0-1 정규화
+- [ ] EconomicScore = 0.70*GDP + 0.30*Growth
 - [ ] 결과 min 0 클램핑
-- [ ] 저장 스키마(WSB) JSON 구조 준수
 - [ ] `/health` 응답에 DS-02 상태 반영
 - [ ] `/predict` 응답에 economic_score, data_quality 반영
-- [ ] 스냅샷 메타데이터 기록
 
 ---
 
-## 13. 테스트 시나리오 (11장 연계)
+## 11. 테스트 시나리오
 
-### TC-DS02-001: 정상 수집 및 점수 산정
-- **입력**: VNM, year=2023, 모든 지표 존재
-- **기대**: economic_score 0 < x ≤ 1, missing_fields = []
+| ID | 시나리오 | 기대 결과 |
+|----|---------|----------|
+| TC-DS02-001 | 정상 (GDP+Growth 모두 존재) | 0 < economic_score ≤ 1 |
+| TC-DS02-002 | GDP 결측 → 제외 | excluded=True |
+| TC-DS02-003 | GDP=0 → 결측 간주 → 제외 | excluded=True |
+| TC-DS02-004 | GDP < 0 → 이상값 → 제외 | excluded=True, warning |
+| TC-DS02-005 | GDP growth 결측 → 0점 | excluded=False, score = GDP 기여분만 |
+| TC-DS02-006 | Growth 클리핑 상한 (15%→10%) | norm = 1.0 |
+| TC-DS02-007 | Growth 클리핑 하한 (-10%→-5%) | norm = 0.0 |
+| TC-DS02-008 | 3년 초과 데이터 → 무효 | 해당 지표 결측 처리 |
+| TC-DS02-009 | GDP가 큰 국가 → 높은 norm_gdp | USA > VNM |
 
-### TC-DS02-002: 필수 지표 결측 → 후보군 제외
-- **입력**: XXX, GDP=null
-- **기대**: 해당 국가 results에서 제외, explanation에 warning
+---
 
-### TC-DS02-003: 선택 지표 결측 → 0점 처리
-- **입력**: MMR, gdp_growth=null, inflation=null
-- **기대**: economic_score 계산됨 (GDP, Import만으로), missing_fields에 기록
+## 12. 버전 이력
 
-### TC-DS02-004: 3년 초과 데이터 → 무효
-- **입력**: 국가 Y, 최신 GDP year=2020 (current=2026)
-- **기대**: GDP 무효 → 후보군 제외
-
-### TC-DS02-005: 이상값 (GDP ≤ 0)
-- **입력**: 국가 Z, GDP=-100
-- **기대**: 후보군 제외, warning 기록
-
-### TC-DS02-006: 클리핑 경계값
-- **입력**: GDP_growth=15% (upper=10)
-- **기대**: clip → 10%, norm = (10+5)/15 = 1.0
-
-### TC-DS02-007: EconomicScore 최소값 클램핑
-- **입력**: 모든 양(+) 항목 0, Inflation max
-- **기대**: score = max(0, -0.10) = 0
+| 버전 | 날짜 | 변경 내용 |
+|------|------|---------|
+| v1.0 | 2026-01-28 | 초안 (7개 지표, API 기반) |
+| v1.1 | 2026-01-28 | **실제 CSV 데이터 기반으로 수정**: 2개 지표 확정, CSV 로더 전환, GDP=0 결측 규칙 반영, ISO2 변환 제거 |
 
 ---
 
