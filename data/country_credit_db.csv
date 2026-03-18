@@ -1,0 +1,24 @@
+country,name_ko,coface,oecd_crc,gni_usd,ksure,sanctioned,default_payment,notes
+VN,베트남,B,4,4150,True,False,L/C or T/T 30%+잔금,K-SURE 가입 가능. 성장시장
+TH,태국,B,3,7810,True,False,T/T 30~60일,
+US,미국,A1,1,80300,True,False,T/T 60일 또는 Net 30,최고신용. 후불 가능
+JP,일본,A1,1,42440,True,False,T/T 60일,통관 엄격
+DE,독일,A1,1,54290,True,False,T/T 60일 또는 Letter of Credit,CPNP 인증 필요
+AU,호주,A1,1,59380,True,False,T/T 60일,
+MY,말레이시아,A3,2,11780,True,False,T/T 30~60일,Halal 인증 유리
+SG,싱가포르,A1,1,67200,True,False,T/T 60일,동남아 유통허브
+ID,인도네시아,B,4,4670,True,False,L/C at sight,Halal 인증 필수
+PH,필리핀,B,4,4040,True,False,L/C or T/T 30%+잔금,
+IN,인도,C,4,2570,True,False,L/C at sight,통관 복잡. BIS 인증 필요
+CN,중국,A4,2,13400,True,False,T/T 30일 선금,NMPA 등록 필수
+IR,이란,E,7,3900,False,True,거래불가,OFAC 제재국
+KP,북한,E,7,0,False,True,거래불가,UN 제재
+RU,러시아,D,4,14250,False,True,거래불가,EU/미국 제재
+BR,브라질,B,3,8920,True,False,L/C or T/T 30~60일,
+MX,멕시코,B,3,11300,True,False,T/T 30일,
+AE,UAE,A3,2,48960,True,False,T/T 60일,중동 허브
+CA,캐나다,A1,1,52960,True,False,T/T 60일,
+GB,영국,A2,1,48890,True,False,T/T 60일,
+FR,프랑스,A2,1,44670,True,False,T/T 60일,
+MN,몽골,C,5,4730,True,False,L/C at sight,KOTRA 유망국
+KZ,카자흐스탄,B,4,10880,True,False,L/C or T/T,

@@ -1,0 +1,43 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test artifacts
+*.ipynb_checkpoints/
+*.session.dill
+test_*.assets/
+
+# Cache
+cache/
+*.cache
+
+# Data (대용량 파일 제외, seed DB는 포함)
+# data/*.csv  ← 주석: seed DB는 버전 관리에 포함
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Logs
+*.log
+logs/

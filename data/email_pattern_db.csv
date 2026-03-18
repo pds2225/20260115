@@ -1,0 +1,13 @@
+pattern,confidence,rank,description
+{first}.{last}@{domain},0.78,1,가장 일반적
+{f}{last}@{domain},0.72,2,이름 이니셜+성
+{first}@{domain},0.65,3,이름만
+{first}{last}@{domain},0.63,4,이름+성 붙임
+{last}.{first}@{domain},0.6,5,성.이름
+{f}.{last}@{domain},0.68,6,이니셜.성
+info@{domain},0.4,7,일반 문의
+purchasing@{domain},0.55,8,구매팀
+import@{domain},0.5,9,수입팀
+sourcing@{domain},0.52,10,소싱팀
+procurement@{domain},0.53,11,조달팀
+buyer@{domain},0.48,12,바이어

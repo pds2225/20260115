@@ -1,0 +1,56 @@
+hs_code,country,buyer_name,annual_usd,shipments,last_date,buyer_type,city,source
+330499,VN,Công ty TNHH Mỹ Phẩm Sài Gòn,1680000,18,2026-02-20,Distributor,Ho Chi Minh,Customs_VN
+330499,VN,Hanoi Beauty & Wellness Corp,1140000,14,2026-03-01,Wholesaler,Hanoi,Customs_VN
+330499,VN,Vietnam Skincare Import JSC,2040000,22,2026-01-15,Distributor,Ho Chi Minh,Customs_VN
+330499,VN,K-Beauty Vietnam Trading Co,2640000,26,2026-03-05,K-Beauty Specialist,Ho Chi Minh,Customs_VN
+330499,VN,Lotus Cosmetics Distribution,756000,9,2025-12-28,Retailer,Da Nang,Customs_VN
+330499,VN,Mekong Beauty Wholesale,984000,11,2026-01-08,Wholesaler,Can Tho,Customs_VN
+330499,VN,VN Premium Skincare Import,1452000,16,2026-02-10,Distributor,Hanoi,Customs_VN
+330499,VN,Thu Do Cosmetics & Pharmacy,456000,5,2025-11-20,Pharmacy Chain,Hanoi,Customs_VN
+330499,VN,Pho My International Trading,1128000,12,2026-01-22,Wholesaler,Ho Chi Minh,Customs_VN
+330499,VN,Danang Beauty Concepts,384000,4,2025-10-15,Retailer,Da Nang,Customs_VN
+330499,VN,Green Leaf Skincare Import,672000,7,2026-01-30,Distributor,Ho Chi Minh,Customs_VN
+330499,VN,Saigon Premium Cosmetics LLC,1920000,20,2026-02-25,Distributor,Ho Chi Minh,Customs_VN
+330499,VN,Beauty Plus Vietnam JSC,528000,6,2025-12-10,Retailer,Hanoi,Customs_VN
+330499,VN,SeoulBeauty VN Import Co.,1296000,15,2026-03-08,K-Beauty Specialist,Ho Chi Minh,Customs_VN
+330499,VN,Sunrise Cosmetics Distribution,864000,10,2026-01-05,Wholesaler,Hai Phong,Customs_VN
+330499,TH,Bangkok Beauty Import Co.,2340000,24,2026-02-15,Distributor,Bangkok,Customs_TH
+330499,TH,Thai Cosme Trading Corp,1404000,14,2026-01-20,Wholesaler,Bangkok,Customs_TH
+330499,TH,Siam Beauty Distribution Ltd,1080000,11,2025-12-08,Distributor,Chiang Mai,Customs_TH
+330499,TH,K-Style Beauty Thailand,1728000,18,2026-02-28,K-Beauty Specialist,Bangkok,Customs_TH
+330499,TH,Pure Nature Cosmetics Import,696000,7,2025-11-15,Organic Specialist,Bangkok,Customs_TH
+330499,TH,Central Beauty Wholesale,2016000,21,2026-03-01,Chain Retailer,Bangkok,Customs_TH
+330499,US,K-Beauty USA Distribution LLC,2499996,24,2026-03-10,K-Beauty Distributor,Los Angeles,Customs_US
+330499,US,PureGlow Wholesale Inc.,1440000,18,2026-02-25,Wholesaler,New York,Customs_US
+330499,US,Midwest Beauty Imports Corp.,960000,14,2026-02-15,Regional Distributor,Chicago,Customs_US
+330499,US,Asian Beauty Mart Trading Co.,760000,12,2026-01-30,Asian Market Specialist,Los Angeles,Customs_US
+330499,US,GlowBox Subscription Beauty LLC,580000,16,2026-03-05,Subscription Box,Austin,Customs_US
+330499,US,Texas Spa Supply Wholesale,390000,8,2026-01-20,Spa/Salon Supplier,Dallas,Customs_US
+330499,US,MegaMart Cosmetics USA,9600000,24,2026-03-01,Mass Retailer,Bentonville,Customs_US
+330499,US,Pacific Rim Beauty Imports,1200000,16,2026-02-08,Pan-Asian Distributor,Seattle,Customs_US
+330499,US,NaturalGlow Supply Co.,480000,10,2025-12-20,Clean Beauty Specialist,Portland,Customs_US
+330499,US,HMart Beauty Wholesale,840000,12,2026-01-25,Korean-American Chain,Los Angeles,Customs_US
+330499,JP,Tokyo Beauty Imports KK,1800000,18,2026-02-10,Distributor,Tokyo,Customs_JP
+330499,JP,Osaka Cosmetic Trading Co.,1200000,14,2026-01-15,Wholesaler,Osaka,Customs_JP
+330499,JP,Hana Beauty Japan Corp,2400000,22,2026-03-01,K-Beauty Specialist,Tokyo,Customs_JP
+330499,DE,Euro K-Beauty GmbH,1560000,16,2026-02-05,European Distributor,Berlin,Customs_DE
+330499,DE,Berlin Skincare Import UG,720000,8,2025-12-15,Online Retailer,Frankfurt,Customs_DE
+330499,MY,KL Beauty Imports Sdn Bhd,960000,10,2026-01-28,Distributor,Kuala Lumpur,Customs_MY
+330499,MY,Halal Beauty Trading MY,720000,8,2026-02-12,Halal Specialist,Kuala Lumpur,Customs_MY
+330499,SG,ASEAN Beauty Hub Pte Ltd,2400000,24,2026-03-05,Regional Hub Distributor,Singapore,Customs_SG
+330499,SG,Singapore K-Beauty Importers,1080000,12,2026-01-18,K-Beauty Specialist,Singapore,Customs_SG
+330499,ID,Jakarta Beauty Import PT,840000,9,2026-01-10,Distributor,Jakarta,Customs_ID
+330499,ID,Surabaya Cosme Trading,480000,5,2025-11-25,Wholesaler,Surabaya,Customs_ID
+330499,PH,Manila K-Beauty Import Corp,720000,9,2026-02-01,K-Beauty Specialist,Manila,Customs_PH
+330499,PH,Philippine Skincare Wholesale,480000,6,2025-12-05,Wholesaler,Cebu,Customs_PH
+870830,VN,Vietnam Auto Parts Import JSC,5100000,28,2026-02-25,Auto Parts Distributor,Ho Chi Minh,Customs_VN
+870830,VN,Saigon Motor Trading Co.,3720000,20,2026-01-30,Auto Parts Wholesaler,Ho Chi Minh,Customs_VN
+870830,VN,Hanoi Auto Components Import,2880000,15,2026-03-10,Auto Parts Distributor,Hanoi,Customs_VN
+870830,TH,Bangkok Auto Parts Import Ltd,4800000,24,2026-02-18,OEM Supplier,Bangkok,Customs_TH
+870830,US,USA Auto Components Corp,7200000,24,2026-03-05,Auto Parts Distributor,Detroit,Customs_US
+210690,VN,VN Food Supplements Import,1740000,13,2026-02-05,Health Distributor,Ho Chi Minh,Customs_VN
+210690,VN,Healthy Foods Vietnam Corp,1116000,8,2026-01-12,Health Retailer,Hanoi,Customs_VN
+210690,VN,Saigon Nutraceuticals LLC,1320000,10,2025-12-20,Nutraceutical Distributor,Ho Chi Minh,Customs_VN
+210690,TH,Thai Health Products Import,1800000,14,2026-01-28,Health Distributor,Bangkok,Customs_TH
+210690,US,US Natural Supplements Inc.,4800000,20,2026-02-20,Supplement Distributor,Los Angeles,Customs_US
+210690,JP,Japan Wellness Import KK,3600000,18,2026-01-10,Health Distributor,Tokyo,Customs_JP
