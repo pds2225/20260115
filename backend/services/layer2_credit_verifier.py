@@ -25,6 +25,17 @@ from typing import Optional
 from pydantic import BaseModel
 from enum import Enum
 
+# ── 수출 규제 리스크 체커 (Layer 2 추가 레이어) ───────────────────────────────
+try:
+    from backend.services.trade_regulation_checker import check_trade_regulation
+    _TRADE_REG_AVAILABLE = True
+except ImportError:
+    try:
+        from .trade_regulation_checker import check_trade_regulation
+        _TRADE_REG_AVAILABLE = True
+    except ImportError:
+        _TRADE_REG_AVAILABLE = False
+
 
 # ── 스키마 ────────────────────────────────────────────────────────────────
 class CreditGrade(str, Enum):
@@ -293,6 +304,7 @@ class CreditVerifier:
         country: str,
         trade_value_usd: float = 0,
         shipment_count: int = 0,
+        hs_code: str = "",
     ) -> CreditVerificationResult:
 
         # ① 블랙리스트 즉시 차단
@@ -365,7 +377,22 @@ class CreditVerifier:
         guide = PAYMENT_GUIDE.get(grade, PAYMENT_GUIDE[CreditGrade.UNKNOWN])
         ksure_eligible = await fetch_ksure_eligibility(country)
 
-        return CreditVerificationResult(
+        # ⑤ 수출 규제 리스크 체크 (hs_code 제공 시)
+        trade_reg_risk = "NONE"
+        trade_reg_note = ""
+        if hs_code and _TRADE_REG_AVAILABLE:
+            try:
+                reg_result = check_trade_regulation(hs_code, country, "KR")
+                trade_reg_risk = reg_result.get("risk_level", "NONE")
+                trade_reg_note = reg_result.get("note", "")
+                # 규제 있으면 결제조건 권고를 reason에 병기
+                if reg_result.get("has_regulation") and reg_result.get("recommendation"):
+                    guide = dict(guide)  # 원본 수정 방지
+                    guide["reason"] = guide["reason"] + "\n" + reg_result["recommendation"]
+            except Exception:
+                pass  # 규제 체크 실패해도 기존 로직 유지
+
+        result = CreditVerificationResult(
             company_name=company_name,
             country=country,
             credit_grade=grade,
@@ -382,6 +409,10 @@ class CreditVerifier:
             pass_layer2=guide["pass"],
             reason=guide["reason"],
         )
+        # 수출 규제 필드 동적 추가 (Pydantic model_extra 허용 또는 dict 방식)
+        result.__dict__["trade_regulation_risk"] = trade_reg_risk
+        result.__dict__["trade_regulation_note"] = trade_reg_note
+        return result
 
     async def verify_batch(self, buyers: list) -> list[CreditVerificationResult]:
         tasks = [
@@ -390,6 +421,7 @@ class CreditVerifier:
                 b.country,
                 b.total_trade_value_usd,
                 b.shipment_count,
+                getattr(b, "hs_code", ""),   # hs_code 없으면 빈값
             )
             for b in buyers
         ]

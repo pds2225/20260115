@@ -29,9 +29,14 @@
 import os
 import csv
 import asyncio
+import logging
 import httpx
+import pandas as pd
 from pathlib import Path
 from typing import Optional
+from functools import lru_cache
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
 
@@ -55,8 +60,12 @@ def _load_buyer_db() -> list[dict]:
     path = DATA_DIR / "buyer_db.csv"
     if not path.exists():
         return []
-    with open(path, encoding="utf-8") as f:
-        _BUYER_CACHE = list(csv.DictReader(f))
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            _BUYER_CACHE = list(csv.DictReader(f))
+    except UnicodeDecodeError:
+        with open(path, encoding="utf-8") as f:
+            _BUYER_CACHE = list(csv.DictReader(f))
     return _BUYER_CACHE
 
 
@@ -357,3 +366,156 @@ def get_source_status() -> dict:
             "free": True,
         },
     }
+
+
+# ══════════════════════════════════════════════════════════════════
+# 7. 무보 화장품 바이어 이메일 DB (KSURE_2020, 214건)
+# ══════════════════════════════════════════════════════════════════
+
+@lru_cache(maxsize=1)
+def _load_ksure_cosmetic_db() -> list[dict]:
+    """한국무역보험공사 화장품 바이어 이메일 DB 로드 (214건)"""
+    path = DATA_DIR / "ksure_cosmetic_buyers.csv"
+    if not path.exists():
+        return []
+    try:
+        df = pd.read_csv(path, encoding="utf-8-sig")
+        return df.fillna("").to_dict("records")
+    except Exception:
+        return []
+
+
+def get_ksure_cosmetic_buyers(
+    country: str = "",
+    hs_code: str = "330499",
+    top_n: int = 20,
+) -> list[dict]:
+    """
+    무보 화장품 바이어 이메일 DB 조회.
+    화장품 셀러(HS330499)에게 즉시 사용 가능한 실제 이메일 보유 바이어.
+
+    Returns:
+        [{"company_name", "email", "phone", "website",
+          "country_guess", "domain", "hs_code_guess", "source"}]
+    """
+    rows = _load_ksure_cosmetic_db()
+    if not rows:
+        return []
+
+    results = []
+    for r in rows:
+        if country and r.get("country_guess", "").upper() not in (country.upper(), ""):
+            pass  # 국가 필터 — 일치하지 않으면 제외하되 country_guess 빈값은 포함
+        if r.get("email", "").strip():
+            results.append(r)
+
+    return results[:top_n]
+
+
+# ══════════════════════════════════════════════════════════════════
+# 8. KOTRA 수입규제 DB (27,959건) — Layer 2 규제 리스크 조회
+# ══════════════════════════════════════════════════════════════════
+
+@lru_cache(maxsize=1)
+def _load_regulation_db_cached() -> list[dict]:
+    """KOTRA 수입규제 현황 CSV 로드"""
+    path = DATA_DIR / "trade_regulation_db.csv"
+    if not path.exists():
+        return []
+    try:
+        df = pd.read_csv(path, encoding="utf-8-sig", dtype=str)
+        return df.fillna("").to_dict("records")
+    except Exception:
+        return []
+
+
+def check_hs_regulation(hs_code: str, target_country: str) -> dict:
+    """
+    HS코드 × 수출 대상국 조합으로 수입규제 리스크 조회.
+    (trade_regulation_checker.py의 경량 래퍼)
+
+    Returns:
+        {"risk_level": "HIGH"|"MEDIUM"|"LOW"|"NONE",
+         "regulation_count": int,
+         "note": str}
+    """
+    try:
+        from backend.services.trade_regulation_checker import check_trade_regulation
+        result = check_trade_regulation(hs_code, target_country)
+        return {
+            "risk_level": result.get("risk_level", "NONE"),
+            "regulation_count": len(result.get("regulations", [])),
+            "note": result.get("note", ""),
+            "recommendation": result.get("recommendation", ""),
+        }
+    except Exception:
+        return {"risk_level": "NONE", "regulation_count": 0, "note": "", "recommendation": ""}
+
+
+# ══════════════════════════════════════════════════════════════════
+# 9. K-SURE 바이어검색 API 예약 연동
+#    현재: CSV 폴백 / K_SURE_API_KEY 설정 시 실시간 전환
+# ══════════════════════════════════════════════════════════════════
+
+K_SURE_API_KEY = os.getenv("K_SURE_API_KEY", "")
+_KSURE_API_BASE = "https://apis.data.go.kr/B490001/buyerSearchService"
+
+
+async def fetch_ksure_buyers_live(
+    country_code: str,
+    hs_code: str = "",
+    top_n: int = 20,
+) -> list[dict]:
+    """
+    K-SURE 바이어검색 API 실시간 조회.
+    반환: 바이어명, 바이어번호, 국가코드, 국가명, 업종명, 품목명
+
+    현재 상태: API 승인 대기 중 (500 Unexpected errors)
+    승인 후 활성화 예정.
+    키워드: 미국, 중국, 일본, 서비스업, 제조업, 바이어명, 품목
+
+    공공데이터포털: https://www.data.go.kr/data/15144480/openapi.do
+    관리부서: 한국무역보험공사 AI디지털총괄실 (02-399-7192)
+    """
+    if not K_SURE_API_KEY:
+        logger.info("K_SURE_API_KEY 미설정 — CSV 폴백 사용")
+        return get_ksure_cosmetic_buyers(country=country_code, top_n=top_n)
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            params = {
+                "serviceKey": K_SURE_API_KEY,
+                "numOfRows": str(top_n),
+                "pageNo": "1",
+                "cntryCode": country_code,
+                "_type": "json",
+            }
+            if hs_code:
+                params["itemCode"] = hs_code[:6]
+
+            r = await client.get(f"{_KSURE_API_BASE}/getBuyerList", params=params)
+            if r.status_code == 200:
+                data = r.json()
+                items = (data.get("response", {})
+                         .get("body", {})
+                         .get("items", {})
+                         .get("item", []))
+                if isinstance(items, dict):
+                    items = [items]
+                return [
+                    {
+                        "company_name": item.get("buyerNm", ""),
+                        "buyer_no": item.get("buyerNo", ""),
+                        "country": item.get("cntryCode", country_code),
+                        "industry": item.get("indsrtNm", ""),
+                        "product": item.get("itemNm", ""),
+                        "source": "KSURE_API_LIVE",
+                    }
+                    for item in items
+                ]
+    except Exception as e:
+        logger.warning("K-SURE API 오류: %s — CSV 폴백", str(e))
+
+    # 폴백
+    return get_ksure_cosmetic_buyers(country=country_code, top_n=top_n)
