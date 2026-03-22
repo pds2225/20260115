@@ -365,6 +365,20 @@ def get_source_status() -> dict:
             "note": "✅ World Bank GNI 무료 API 병행",
             "free": True,
         },
+        "6_nipa_ict_buyers": {
+            "source": "NIPA 글로벌ICT포털 해외바이어정보 (data.go.kr/B552551)",
+            "status": "LIVE_API",
+            "records": 1853,
+            "note": "✅ 실제 연동. 1,853건 ICT 분야 바이어. 전화번호+상세링크 제공",
+            "free": True,
+        },
+        "7_ksure_buyer_search": {
+            "source": "K-SURE 바이어검색 API (data.go.kr/B552696)",
+            "status": "LIVE_API",
+            "records": 0,  # 검색시마다 실시간 조회 (US/beauty 739건 등)
+            "note": "✅ 실제 연동. 50개국 지원. HS코드 기반 멀티키워드 검색 가능",
+            "free": True,
+        },
     }
 
 
@@ -426,6 +440,51 @@ def _load_regulation_db_cached() -> list[dict]:
         df = pd.read_csv(path, encoding="utf-8-sig", dtype=str)
         return df.fillna("").to_dict("records")
     except Exception:
+        return []
+
+
+def get_nipa_buyers(
+    country: str = "",
+    keyword: str = "",
+    limit: int = 20,
+) -> list[dict]:
+    """
+    NIPA 글로벌ICT포털 해외바이어 조회 (1,853건, ICT 특화)
+    Returns: [{"company_name","country","phone","registered_date","detail_link","source"}]
+    """
+    try:
+        from backend.services.nipa_ict_client import search_nipa_buyers
+        return search_nipa_buyers(country=country or None, keyword=keyword or None, limit=limit)
+    except Exception as e:
+        logger.warning(f"[NIPA] 조회 오류: {e}")
+        return []
+
+
+def search_ksure_buyers(
+    country_iso2: str,
+    hs_code: str = "330499",
+    prod_nm: Optional[str] = None,
+    max_buyers: int = 50,
+) -> list[dict]:
+    """
+    K-SURE 바이어검색 API — HS코드 기반 멀티키워드 검색
+    실제 API: https://apis.data.go.kr/B552696/buyer/getBuyerList
+    지원국: 미국, 베트남, 태국, 일본, 싱가포르, 말레이시아, 인도네시아, 인도 등 50개국
+
+    Returns: [{"buyer_name","industry","product","buyer_id","country_iso2","source"}]
+    """
+    try:
+        from backend.services.ksure_buyer_client import (
+            search_ksure_buyers as _ksure_search,
+            search_ksure_multi_keyword,
+        )
+        if prod_nm:
+            result = _ksure_search(country_iso2, hs_code, prod_nm=prod_nm, num_of_rows=min(max_buyers, 100))
+            return result.get("buyers", [])
+        else:
+            return search_ksure_multi_keyword(country_iso2, hs_code, max_buyers=max_buyers)
+    except Exception as e:
+        logger.warning(f"[K-SURE] 조회 오류: {e}")
         return []
 
 

@@ -136,9 +136,73 @@ def data_source_status():
     return get_source_status()
 
 
-# ══════════════════════════════════════════════════════════════════
-# 메인: 4중 검증 파이프라인 (스크린샷 목표 구조)
-# ══════════════════════════════════════════════════════════════════
+@router.get(
+    "/nipa/buyers",
+    summary="🌐 NIPA 글로벌ICT포털 해외바이어 검색",
+    tags=["바이어 검색"],
+)
+def search_nipa_buyers(
+    country: str = "",
+    keyword: str = "",
+    limit: int = 20,
+):
+    """
+    ## NIPA 글로벌ICT포털 해외바이어정보 검색
+    - **총 1,853건** | ICT/IT 분야 특화
+    - 국가별 분포: UAE/두바이 123건, 미국 40건, 싱가포르 60건, 베트남 47건 등
+    - 제공 필드: 회사명, 국가, 전화번호, 등록일, 상세링크
+    - **country**: ISO2 코드 또는 국가명 (예: US, 미국, VN, 베트남)
+    - **keyword**: 회사명 검색어
+    """
+    from backend.services.data_source_manager import get_nipa_buyers
+    results = get_nipa_buyers(country=country, keyword=keyword, limit=limit)
+    return {
+        "count": len(results),
+        "country_filter": country or "전체",
+        "keyword_filter": keyword or "없음",
+        "source": "NIPA_글로벌ICT포털_해외바이어정보",
+        "note": "ICT/IT 업종 특화 바이어. 이메일은 상세링크에서 확인 가능.",
+        "buyers": results,
+    }
+
+
+@router.get(
+    "/ksure/buyers",
+    summary="🛡️ K-SURE 바이어검색 API (한국무역보험공사)",
+    tags=["바이어 검색"],
+)
+def search_ksure_buyers_endpoint(
+    country: str = "US",
+    hs_code: str = "330499",
+    prod_nm: str = "",
+    max_buyers: int = 50,
+):
+    """
+    ## K-SURE 바이어검색 API — HS코드 기반 실시간 조회
+    - **50개국 지원** | 화장품·뷰티 미국 739건, 베트남 209건 등
+    - HS코드 기반 업종 키워드 자동 매핑 (또는 직접 입력)
+    - 제공 필드: 바이어명, 업종명, 품목명, K-SURE 대상자번호
+    - **country**: ISO2 코드 (예: US, VN, TH, JP, SG, MY, ID, IN, DE, GB)
+    - **hs_code**: HS 6자리 코드
+    - **prod_nm**: 품목 키워드 직접 입력 (비워두면 HS코드 자동 변환)
+    """
+    from backend.services.data_source_manager import search_ksure_buyers
+    buyers = search_ksure_buyers(
+        country_iso2=country,
+        hs_code=hs_code,
+        prod_nm=prod_nm if prod_nm else None,
+        max_buyers=max_buyers,
+    )
+    return {
+        "count": len(buyers),
+        "country": country,
+        "hs_code": hs_code,
+        "source": "K-SURE_바이어검색_API",
+        "note": "바이어명·업종명·품목명 제공. 이메일은 KSURE 화장품DB 또는 Hunter.io 병합 필요.",
+        "buyers": buyers,
+    }
+
+
 @router.post(
     "/pipeline/v2/run",
     summary="🚀 4중 검증 파이프라인 (Layer1~4 AND 필터 + FitScore™)",
