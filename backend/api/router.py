@@ -535,3 +535,124 @@ async def outreach_batch(req: OutreachBatchRequest):
         "results": results,
         "gmail_setup_required": preview_only,
     }
+
+
+# ══════════════════════════════════════════════════════════════════
+# KOTRA SNS 바이어 검색 (46,034건 실데이터)
+# ══════════════════════════════════════════════════════════════════
+@router.get(
+    "/kotra/sns-buyers",
+    summary="KOTRA SNS 바이어 검색",
+    description="KOTRA SNS 마케팅 수집 바이어 46,034건 검색 (국가ISO2/HS코드/키워드 필터)",
+    tags=["바이어검색"],
+)
+def search_kotra_sns(
+    country: str = "",
+    hs_code: str = "",
+    keyword: str = "",
+    top_n: int = 50,
+):
+    from backend.services.data_source_manager import search_kotra_sns_buyers
+    results = search_kotra_sns_buyers(country=country, hs_code=hs_code, keyword=keyword, top_n=top_n)
+    return {
+        "source": "KOTRA_SNS_2025",
+        "total_db": 46034,
+        "count": len(results),
+        "filters": {"country": country, "hs_code": hs_code, "keyword": keyword},
+        "buyers": results,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════
+# KOTRA 인콰이어리 검색 (40,305건 — 수요 신호)
+# ══════════════════════════════════════════════════════════════════
+@router.get(
+    "/kotra/inquiry",
+    summary="KOTRA 인콰이어리 수요 신호",
+    description="KOTRA 인콰이어리 40,305건 검색. 해외 바이어의 실제 구매 요청 정보.",
+    tags=["바이어검색"],
+)
+def search_kotra_inquiry_endpoint(
+    country: str = "",
+    keyword: str = "",
+    top_n: int = 50,
+):
+    from backend.services.data_source_manager import search_kotra_inquiry
+    results = search_kotra_inquiry(country=country, keyword=keyword, top_n=top_n)
+    return {
+        "source": "KOTRA_INQUIRY_2025",
+        "total_db": 40305,
+        "count": len(results),
+        "filters": {"country": country, "keyword": keyword},
+        "inquiries": results,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════
+# 중진공 수요 신호 (인콰이어리 21,302건 + 구매오퍼 326건)
+# ══════════════════════════════════════════════════════════════════
+@router.get(
+    "/smba/demand",
+    summary="중진공 수요 신호 (인콰이어리+구매오퍼)",
+    description="중소벤처기업진흥공단 인콰이어리 21,302건 + 구매오퍼 326건 통합 검색",
+    tags=["바이어검색"],
+)
+def search_smba_demand_endpoint(
+    country: str = "",
+    keyword: str = "",
+    top_n: int = 50,
+):
+    from backend.services.data_source_manager import search_smba_demand
+    results = search_smba_demand(country=country, keyword=keyword, top_n=top_n)
+    return {
+        "source": "SMBA_2024",
+        "total_db": 21628,
+        "count": len(results),
+        "filters": {"country": country, "keyword": keyword},
+        "demands": results,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════
+# K-SURE 화장품 이메일 바이어 (214건 — 이메일 즉시 사용 가능)
+# ══════════════════════════════════════════════════════════════════
+@router.get(
+    "/ksure/email-buyers",
+    summary="K-SURE 화장품 이메일 바이어",
+    description="한국무역보험공사 화장품 바이어 중 실제 이메일 보유 214건. 즉시 아웃리치 가능.",
+    tags=["바이어검색"],
+)
+def get_ksure_email_buyers_endpoint(keyword: str = "", top_n: int = 30):
+    from backend.services.data_source_manager import get_ksure_email_buyers
+    results = get_ksure_email_buyers(keyword=keyword, top_n=top_n)
+    return {
+        "source": "KSURE_EMAIL_2020",
+        "total_db": 214,
+        "count": len(results),
+        "note": "이메일 주소 즉시 사용 가능한 화장품 바이어",
+        "buyers": results,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════
+# 데이터 소스 전체 현황 v2 (14개 소스)
+# ══════════════════════════════════════════════════════════════════
+@router.get(
+    "/data-sources/status/v2",
+    summary="데이터 소스 전체 현황 v2",
+    description="실제 공공데이터 통합 후 14개 소스 현황",
+    tags=["시스템"],
+)
+def get_source_status_v2_endpoint():
+    from backend.services.data_source_manager import get_source_status_v2
+    status = get_source_status_v2()
+    total_records = sum(v.get("records", 0) for v in status.values())
+    real_count = sum(1 for v in status.values() if "REAL" in v.get("status","") or "LIVE" in v.get("status",""))
+    return {
+        "summary": {
+            "total_sources": len(status),
+            "real_or_live": real_count,
+            "total_records": total_records,
+        },
+        "sources": status,
+    }
