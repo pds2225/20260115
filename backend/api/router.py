@@ -656,3 +656,62 @@ def get_source_status_v2_endpoint():
         },
         "sources": status,
     }
+
+
+# ══════════════════════════════════════════════════════════════════
+# 중기부 bizinfo 수출지원사업 공고 (외부 API - 승인 후 활성화)
+# ══════════════════════════════════════════════════════════════════
+@router.get(
+    "/bizinfo/export-support",
+    summary="중기부 수출지원사업 공고",
+    description=(
+        "중소벤처기업부 bizinfo 수출지원사업 공고 검색.\n"
+        "- API URL: https://www.bizinfo.go.kr/uss/rss/bizinfoApi.do\n"
+        "- 승인 후 실시간 연동 가능 (현재는 정적 샘플 반환)\n"
+        "- 파라미터: searchLclasId=CCRS000017 (수출 분야)"
+    ),
+    tags=["지원사업"],
+)
+def get_bizinfo_export_support(
+    keyword: str = "",
+    top_n: int = 20,
+):
+    from backend.services.data_source_manager import get_bizinfo_export_programs
+    results = get_bizinfo_export_programs(keyword=keyword, top_n=top_n)
+    return {
+        "source": "BIZINFO_SMBA",
+        "api_endpoint": "https://www.bizinfo.go.kr/uss/rss/bizinfoApi.do",
+        "api_status": "승인 대기 (API키 발급 후 실시간 연동 가능)",
+        "note": "중소벤처기업부 수출지원사업 공고 - 보조금/지원사업 안내",
+        "count": len(results),
+        "programs": results,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════
+# 품목별 바이어 검색 (기계/식품/의류/화장품/전자/의약/자동차)
+# ══════════════════════════════════════════════════════════════════
+@router.get(
+    "/buyers/by-category",
+    summary="품목 카테고리별 바이어 검색",
+    description=(
+        "HS코드 카테고리별 바이어 검색.\n"
+        "category 파라미터: 화장품_뷰티 | 기계_산업장비 | 식품_건강기능식품 | "
+        "의류_패션 | 전자_반도체 | 의약_의료기기 | 자동차_부품"
+    ),
+    tags=["바이어검색"],
+)
+def search_buyers_by_category(
+    category: str = "화장품_뷰티",
+    country: str = "",
+    top_n: int = 50,
+):
+    from backend.services.data_source_manager import get_buyers_by_category
+    results = get_buyers_by_category(category=category, country=country, top_n=top_n)
+    return {
+        "source": "KOTRA_SNS_2025 + Customs",
+        "category": category,
+        "country_filter": country or "전체",
+        "count": len(results),
+        "buyers": results,
+    }

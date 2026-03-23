@@ -840,3 +840,58 @@ def get_source_status_v2() -> dict:
             "note": "✅ 27,959건 반덤핑/수입규제",
         },
     }
+
+
+# ══════════════════════════════════════════════════════════════════
+# bizinfo 수출지원사업 (정적 샘플 / API 승인 후 실시간 교체)
+# ══════════════════════════════════════════════════════════════════
+_BIZINFO_SAMPLE = [
+    {"program": "수출바우처 사업", "org": "중소벤처기업부", "category": "수출", "desc": "중소·중견기업 수출역량 강화를 위한 수출지원 서비스 바우처 제공", "deadline": "연중 수시"},
+    {"program": "글로벌 강소기업 육성사업", "org": "중소벤처기업부", "category": "수출", "desc": "수출 유망 중소기업 집중 육성 및 글로벌 시장 진출 지원", "deadline": "상반기 공고"},
+    {"program": "중소기업 수출 인큐베이터", "org": "중소기업진흥공단", "category": "수출", "desc": "해외 현지 사무공간·비즈니스 지원 서비스 제공", "deadline": "연중 수시"},
+    {"program": "해외규격인증 획득지원", "org": "중소벤처기업부", "category": "수출", "desc": "CE·FDA·KC 등 해외 규격 인증 취득 비용 지원", "deadline": "상반기 공고"},
+    {"program": "K-뷰티 글로벌 마케팅 지원", "org": "KOTRA", "category": "수출/화장품", "desc": "화장품·뷰티 기업 해외 전시회·마케팅 지원", "deadline": "연중 수시"},
+    {"program": "FTA 활용 수출 지원", "org": "관세청", "category": "수출/FTA", "desc": "FTA 원산지 증명 및 활용 컨설팅 무료 제공", "deadline": "연중 수시"},
+    {"program": "농식품 수출 활성화 지원", "org": "한국농수산식품유통공사(aT)", "category": "수출/농식품", "desc": "농수산식품 해외 바이어 발굴·상담회 참가 지원", "deadline": "연중 수시"},
+    {"program": "중소기업 해외전시회 참가 지원", "org": "중소기업진흥공단", "category": "수출", "desc": "국제 박람회 참가비 50%~80% 지원", "deadline": "분기별 공고"},
+    {"program": "수출금융 우대보증", "org": "한국무역보험공사(K-SURE)", "category": "수출금융", "desc": "수출기업 결제위험 보장 및 무역보험 우대 적용", "deadline": "연중 수시"},
+    {"program": "ICT 수출지원 사업", "org": "NIPA", "category": "수출/ICT", "desc": "ICT 기업 해외 진출 컨설팅·현지화·마케팅 지원", "deadline": "상반기 공고"},
+]
+
+def get_bizinfo_export_programs(keyword: str = "", top_n: int = 20):
+    """중기부 수출지원사업 공고 (정적 샘플 / API 승인 후 실시간)"""
+    results = _BIZINFO_SAMPLE
+    if keyword:
+        kw = keyword.lower()
+        results = [p for p in results if kw in p.get("program","").lower() or kw in p.get("desc","").lower() or kw in p.get("category","").lower()]
+    return results[:top_n]
+
+
+# ══════════════════════════════════════════════════════════════════
+# 품목 카테고리별 바이어 검색
+# ══════════════════════════════════════════════════════════════════
+import os as _os
+
+_CATEGORY_FILES = {
+    "화장품_뷰티": "buyers_화장품_뷰티.csv",
+    "기계_산업장비": "buyers_기계_산업장비.csv",
+    "식품_건강기능식품": "buyers_식품_건강기능식품.csv",
+    "의류_패션": "buyers_의류_패션.csv",
+    "전자_반도체": "buyers_전자_반도체.csv",
+    "의약_의료기기": "buyers_의약_의료기기.csv",
+    "자동차_부품": "buyers_자동차_부품.csv",
+}
+
+def get_buyers_by_category(category: str = "화장품_뷰티", country: str = "", top_n: int = 50):
+    """품목 카테고리별 바이어 CSV에서 조회"""
+    import pandas as pd
+    fname = _CATEGORY_FILES.get(category, "buyers_화장품_뷰티.csv")
+    fpath = _os.path.join(_os.path.dirname(__file__), "../../data", fname)
+    if not _os.path.exists(fpath):
+        return []
+    df = pd.read_csv(fpath, dtype=str)
+    if country:
+        co = country.upper()
+        df = df[df["country"].str.upper() == co] if "country" in df.columns else df
+    records = df.head(top_n).to_dict(orient="records")
+    return records
